@@ -45,11 +45,16 @@ const LINE_HEIGHT = 1.15
 // An empty <p> collapses to height 0 in the browser, but in Word an empty
 // paragraph occupies one line at its paragraph-mark font size. Force a
 // min-height of one line so measured heights stay aligned with Word's layout.
+// Empty paragraphs in Word occupy a full line; the document's fallback fonts
+// render that line taller than the bare line-height, so use a slightly larger
+// multiplier to keep flow positions (e.g. the cover's customer name) aligned.
+const EMPTY_LINE_EM = 1.5
+
 function ensureLineBox(el: HTMLElement): void {
   // Empty runs still create (empty) text nodes, so check for visible content
   // rather than child count. Images carry their own height.
   if (!el.textContent && !el.querySelector('img')) {
-    el.style.minHeight = `${LINE_HEIGHT}em`
+    el.style.minHeight = `${EMPTY_LINE_EM}em`
   }
 }
 
@@ -168,11 +173,17 @@ function isPageLevelImage(run: Run, pw: number, ph: number): boolean {
 }
 
 // Return the paragraph with page-level images (background + watermark) stripped,
-// leaving only the content that flows with text. Null if nothing remains.
+// leaving the content that flows with text. A paragraph that was ONLY a page-
+// level image carrier is dropped (null); an originally-empty paragraph is kept
+// because it acts as a vertical spacer (e.g. on the cover).
 function flowOnly(block: ParagraphBlock, pw: number, ph: number): ParagraphBlock | null {
+  const hadPageImage = block.runs.some(r => isPageLevelImage(r, pw, ph))
   const runs = block.runs.filter(r => !isPageLevelImage(r, pw, ph))
-  const hasContent = runs.some(r => r.type !== 'run' || (r as TextRun).text.length > 0)
-  return hasContent ? { ...block, runs } : null
+  if (hadPageImage) {
+    const hasContent = runs.some(r => r.type !== 'run' || (r as TextRun).text.length > 0)
+    if (!hasContent) return null
+  }
+  return { ...block, runs }
 }
 
 // All watermark images carried by a block (for overlay rendering).
