@@ -100,9 +100,7 @@ async function parseRun(
     const drawing = r.drawing as Record<string, unknown>
     const anchor = drawing.anchor as Record<string, unknown> | undefined
     const inline = drawing.inline as Record<string, unknown> | undefined
-
-    // Skip background/watermark anchors (positioned behind doc text)
-    if (anchor && !inline && String(anchor.behindDoc ?? '0') === '1') return null
+    const isPageBackground = !inline && !!anchor && String(anchor.behindDoc ?? '0') === '1'
 
     const drawingEl = inline ?? anchor
     if (!drawingEl) return null
@@ -124,6 +122,7 @@ async function parseRun(
       src: resolved.src,
       widthPx: Math.round(cx / 9525),
       heightPx: Math.round(cy / 9525),
+      ...(isPageBackground ? { isPageBackground: true } : {}),
     }
     return img
   }

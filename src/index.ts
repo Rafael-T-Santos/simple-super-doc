@@ -9,6 +9,34 @@ import { render as renderHtml } from './renderer/html.js'
 export type { DocxDocument, Block, ParagraphBlock, TableBlock, TableCell, TableRow, TextRun, ImageRun, Run, ComputedStyle, ListRef } from './types.js'
 export { DocxParseError } from './types.js'
 
+function parsePageSize(xml: string): DocxDocument['pageSize'] {
+  const twipsToPx = (s: string) => Math.round(parseFloat(s) * 96 / 1440)
+  const pgSz = /<w:pgSz\b([^/]*)\/?>/.exec(xml)
+  if (!pgSz) return undefined
+  const attrs = pgSz[1]
+  const w = /\bw:w="([\d.]+)"/.exec(attrs)?.[1]
+  const h = /\bw:h="([\d.]+)"/.exec(attrs)?.[1]
+  if (!w || !h) return undefined
+
+  const pgMar = /<w:pgMar\b([^/]*)\/?>/.exec(xml)
+  const ma = pgMar?.[1] ?? ''
+  const top    = /\bw:top="([\d.]+)"/.exec(ma)?.[1]    ?? '1440'
+  const right  = /\bw:right="([\d.]+)"/.exec(ma)?.[1]  ?? '1440'
+  const bottom = /\bw:bottom="([\d.]+)"/.exec(ma)?.[1] ?? '1440'
+  const left   = /\bw:left="([\d.]+)"/.exec(ma)?.[1]   ?? '1440'
+
+  return {
+    widthPx:  twipsToPx(w),
+    heightPx: twipsToPx(h),
+    marginPx: {
+      top:    twipsToPx(top),
+      right:  twipsToPx(right),
+      bottom: twipsToPx(bottom),
+      left:   twipsToPx(left),
+    },
+  }
+}
+
 async function readEntry(zip: JSZip, path: string, required: true): Promise<string>
 async function readEntry(zip: JSZip, path: string, required: false): Promise<string | null>
 async function readEntry(zip: JSZip, path: string, required: boolean): Promise<string | null> {
@@ -50,7 +78,7 @@ export async function parse(buffer: ArrayBuffer): Promise<DocxDocument> {
     zip,
   })
 
-  return { blocks }
+  return { blocks, pageSize: parsePageSize(documentXml) }
 }
 
 export function render(doc: DocxDocument, container: HTMLElement): void {

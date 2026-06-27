@@ -1,4 +1,7 @@
-export type DocxDocument = { blocks: Block[] }
+export type DocxDocument = {
+  blocks: Block[]
+  pageSize?: { widthPx: number; heightPx: number; marginPx: { top: number; right: number; bottom: number; left: number } }
+}
 
 export type Block = ParagraphBlock | TableBlock
 
@@ -22,6 +25,7 @@ export type ImageRun = {
   src: string        // base64 data URL
   widthPx: number    // converted from EMU: Math.round(cx / 9525)
   heightPx: number
+  isPageBackground?: boolean  // true when wp:anchor behindDoc="1" (full-page background)
 }
 
 export type TableBlock = {
