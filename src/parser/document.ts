@@ -98,9 +98,13 @@ async function parseRun(
   // Image via drawing
   if ('drawing' in r) {
     const drawing = r.drawing as Record<string, unknown>
-    const drawingEl =
-      (drawing.inline as Record<string, unknown> | undefined) ??
-      (drawing.anchor as Record<string, unknown> | undefined)
+    const anchor = drawing.anchor as Record<string, unknown> | undefined
+    const inline = drawing.inline as Record<string, unknown> | undefined
+
+    // Skip background/watermark anchors (positioned behind doc text)
+    if (anchor && !inline && String(anchor.behindDoc ?? '0') === '1') return null
+
+    const drawingEl = inline ?? anchor
     if (!drawingEl) return null
 
     const extent = drawingEl.extent as Record<string, string> | undefined
@@ -212,7 +216,10 @@ async function parseTable(
         vMerge = val === 'restart' ? 'restart' : 'continue'
       }
 
-      rawRow.push({ colSpan, vMerge, rawData: tc })
+      const tcShd = tcPr?.shd as Record<string, string> | undefined
+      const cellBg = tcShd?.fill && tcShd.fill !== 'auto' ? tcShd.fill : undefined
+
+      rawRow.push({ colSpan, vMerge, rawData: tc, backgroundColor: cellBg })
     }
     rawGrid.push(rawRow)
   }
@@ -226,7 +233,9 @@ async function parseTable(
     for (const cell of resolvedRow) {
       const tc = cell.rawData as Record<string, unknown>
       const cellBlocks = await parseBlockContainer(tc, ctx)
-      irCells.push({ rowSpan: cell.rowSpan, colSpan: cell.colSpan, blocks: cellBlocks })
+      const irCell: TableCell = { rowSpan: cell.rowSpan, colSpan: cell.colSpan, blocks: cellBlocks }
+      if (cell.backgroundColor) irCell.backgroundColor = cell.backgroundColor
+      irCells.push(irCell)
     }
     irRows.push({ cells: irCells })
   }
@@ -234,17 +243,56 @@ async function parseTable(
   return { type: 'table', rows: irRows }
 }
 
+// Scan raw body XML to determine document order of top-level p and tbl elements.
+// fast-xml-parser groups elements by tag name, losing cross-type ordering.
+function getBodyBlockOrder(xml: string): Array<'p' | 'tbl'> {
+  const bodyStart = xml.indexOf('<w:body>')
+  const bodyEnd = xml.lastIndexOf('</w:body>')
+  if (bodyStart === -1 || bodyEnd === -1) return []
+  const body = xml.slice(bodyStart + 8, bodyEnd)
+
+  const order: Array<'p' | 'tbl'> = []
+  // Match opening/closing w:p and w:tbl tags ([\s>\/] excludes w:pPr, w:pStyle etc.)
+  const re = /<(\/?)w:(p|tbl)[\s>\/]/g
+  let tblDepth = 0
+  let m: RegExpExecArray | null
+  while ((m = re.exec(body)) !== null) {
+    const isClose = m[1] === '/'
+    const tag = m[2] as 'p' | 'tbl'
+    if (isClose) {
+      if (tag === 'tbl') tblDepth = Math.max(0, tblDepth - 1)
+    } else {
+      if (tblDepth === 0) order.push(tag)
+      if (tag === 'tbl') tblDepth++
+    }
+  }
+  return order
+}
+
 // Parse all paragraph and table children of a container node (body, cell, etc.)
 async function parseBlockContainer(
   container: Record<string, unknown>,
   ctx: ParseContext,
+  order?: Array<'p' | 'tbl'>,
 ): Promise<Block[]> {
-  const blocks: Block[] = []
-  for (const p of ((container.p ?? []) as Record<string, unknown>[])) {
-    blocks.push(await parseParagraph(p, ctx))
+  const ps = (container.p ?? []) as Record<string, unknown>[]
+  const tbls = (container.tbl ?? []) as Record<string, unknown>[]
+
+  if (!order || order.length === 0) {
+    const blocks: Block[] = []
+    for (const p of ps) blocks.push(await parseParagraph(p, ctx))
+    for (const tbl of tbls) blocks.push(await parseTable(tbl, ctx))
+    return blocks
   }
-  for (const tbl of ((container.tbl ?? []) as Record<string, unknown>[])) {
-    blocks.push(await parseTable(tbl, ctx))
+
+  const blocks: Block[] = []
+  let pIdx = 0, tblIdx = 0
+  for (const type of order) {
+    if (type === 'p' && pIdx < ps.length) {
+      blocks.push(await parseParagraph(ps[pIdx++], ctx))
+    } else if (type === 'tbl' && tblIdx < tbls.length) {
+      blocks.push(await parseTable(tbls[tblIdx++], ctx))
+    }
   }
   return blocks
 }
@@ -253,5 +301,6 @@ export async function parseDocument(xml: string, ctx: ParseContext): Promise<Blo
   const doc = parser.parse(xml) as Record<string, unknown>
   const body = (doc?.document as Record<string, unknown>)?.body as Record<string, unknown>
   if (!body) return []
-  return parseBlockContainer(body, ctx)
+  const order = getBodyBlockOrder(xml)
+  return parseBlockContainer(body, ctx, order)
 }

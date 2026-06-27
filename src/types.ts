@@ -37,6 +37,7 @@ export type TableCell = {
   rowSpan: number   // 1 = no merge
   colSpan: number   // 1 = no merge
   blocks: Block[]
+  backgroundColor?: string  // hex from w:shd fill (e.g. "ff6109"), no # prefix
 }
 
 // Counter increment is the renderer's responsibility.
@@ -56,6 +57,7 @@ export type ComputedStyle = {
   fontFamily?: string    // from w:rFonts w:ascii (fallback w:hAnsi)
   color?: string         // hex e.g. "FF0000"; "auto" is filtered out at parse time
   alignment?: 'left' | 'center' | 'right' | 'justify'
+  backgroundColor?: string  // hex from w:shd fill (e.g. "ff6109"), no # prefix
 }
 
 export class DocxParseError extends Error {

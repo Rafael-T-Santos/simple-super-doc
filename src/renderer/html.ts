@@ -9,6 +9,7 @@ function styleToCss(s: ComputedStyle): string {
   if (s.fontFamily) parts.push(`font-family:${s.fontFamily},sans-serif`)
   if (s.color) parts.push(`color:#${s.color}`)
   if (s.alignment) parts.push(`text-align:${s.alignment}`)
+  if (s.backgroundColor) parts.push(`background-color:#${s.backgroundColor}`)
   return parts.join(';')
 }
 
@@ -57,6 +58,7 @@ function renderTable(block: TableBlock, container: HTMLElement): void {
       const td = document.createElement('td')
       if (cell.colSpan > 1) td.colSpan = cell.colSpan
       if (cell.rowSpan > 1) td.rowSpan = cell.rowSpan
+      if (cell.backgroundColor) td.style.backgroundColor = `#${cell.backgroundColor}`
       renderBlocks(cell.blocks, td)
       tr.appendChild(td)
     }

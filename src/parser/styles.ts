@@ -63,6 +63,13 @@ export function extractRPr(rPr: Record<string, unknown> | undefined): ComputedSt
     if (val && val !== 'auto') s.color = val
   }
 
+  // character-level shading (background highlight)
+  if ('shd' in rPr) {
+    const shd = rPr.shd as Record<string, string>
+    const fill = typeof shd === 'object' && shd !== null ? shd.fill : undefined
+    if (fill && fill !== 'auto') s.backgroundColor = fill
+  }
+
   return s
 }
 

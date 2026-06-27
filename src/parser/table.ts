@@ -8,12 +8,14 @@ export type RawCell = {
   colSpan: number
   vMerge: 'restart' | 'continue' | 'none'
   rawData: unknown // opaque — passed back to DocumentParser for content extraction
+  backgroundColor?: string
 }
 
 export type ResolvedCell = {
   colSpan: number
   rowSpan: number
   rawData: unknown
+  backgroundColor?: string
 }
 
 export function resolveVMerge(grid: RawCell[][]): ResolvedCell[][] {
@@ -45,6 +47,7 @@ export function resolveVMerge(grid: RawCell[][]): ResolvedCell[][] {
         colSpan: raw.colSpan,
         rowSpan: 1,
         rawData: raw.rawData,
+        ...(raw.backgroundColor ? { backgroundColor: raw.backgroundColor } : {}),
       }
 
       if (raw.vMerge === 'restart') {
