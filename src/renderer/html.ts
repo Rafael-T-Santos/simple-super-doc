@@ -141,12 +141,36 @@ function extractPageBackground(block: ParagraphBlock): ImageRun | null {
   return null
 }
 
-// Return a version of the block with background image runs stripped.
-// Returns null when the block has no remaining renderable content.
-function withoutBgRuns(block: ParagraphBlock): ParagraphBlock | null {
-  const runs = block.runs.filter(r => !(r as ImageRun).isPageBackground)
+// A large floating image (e.g. the document's watermark/decorative frame) that
+// overlays the page rather than flowing with text. Excludes page backgrounds,
+// small heading/icon images, and the near-full-width closing slide (which is
+// handled as its own edge-to-edge page).
+function isWatermark(img: ImageRun, pw: number, ph: number): boolean {
+  if (img.isPageBackground) return false
+  return img.heightPx >= ph * 0.4 && img.widthPx < pw * 0.85
+}
+
+// A "page-level" image is either a behindDoc background or a watermark — neither
+// participates in text flow.
+function isPageLevelImage(run: Run, pw: number, ph: number): boolean {
+  return run.type === 'image' &&
+    ((run as ImageRun).isPageBackground || isWatermark(run as ImageRun, pw, ph))
+}
+
+// Return the paragraph with page-level images (background + watermark) stripped,
+// leaving only the content that flows with text. Null if nothing remains.
+function flowOnly(block: ParagraphBlock, pw: number, ph: number): ParagraphBlock | null {
+  const runs = block.runs.filter(r => !isPageLevelImage(r, pw, ph))
   const hasContent = runs.some(r => r.type !== 'run' || (r as TextRun).text.length > 0)
   return hasContent ? { ...block, runs } : null
+}
+
+// All watermark images carried by a block (for overlay rendering).
+function watermarksOf(block: Block, pw: number, ph: number): ImageRun[] {
+  if (block.type !== 'paragraph') return []
+  return block.runs.filter(
+    r => r.type === 'image' && isWatermark(r as ImageRun, pw, ph),
+  ) as ImageRun[]
 }
 
 // Does the block carry any visible content (non-whitespace text or an image)?
@@ -157,6 +181,51 @@ function isBlockVisible(block: Block): boolean {
     if ((run as TextRun).text.trim().length > 0) return true
   }
   return false
+}
+
+// Section headings start a new page in this template family. A heading is a
+// large-text paragraph or a wide-short "text-as-image" banner (e.g. the
+// "Condições Comerciais" / "Outras informações" headings, which are images).
+const HEADING_MIN_PT = 24
+
+function headingImage(block: Block): boolean {
+  if (block.type !== 'paragraph') return false
+  for (const run of block.runs) {
+    if (run.type !== 'image') continue
+    const img = run as ImageRun
+    if (img.isPageBackground) continue
+    if (img.widthPx >= 300 && img.heightPx <= 70 && img.widthPx / img.heightPx >= 5) {
+      return true
+    }
+  }
+  return false
+}
+
+function isHeadingBlock(block: Block): boolean {
+  if (block.type !== 'paragraph') return false
+  if (headingImage(block)) return true
+  for (const run of block.runs) {
+    if (run.type === 'run' && (run as TextRun).text.trim() && (run.style.fontSize ?? 0) >= HEADING_MIN_PT) {
+      return true
+    }
+  }
+  return false
+}
+
+// A small standalone icon (e.g. the 70x70 section glyph) that precedes a text
+// heading should travel with it, so the page break goes before the icon.
+function isIconOnly(block: Block): boolean {
+  if (block.type !== 'paragraph') return false
+  let img: ImageRun | null = null
+  for (const run of block.runs) {
+    if (run.type === 'image') {
+      if (img) return false
+      img = run as ImageRun
+    } else if ((run as TextRun).text.trim().length > 0) {
+      return false
+    }
+  }
+  return !!img && img.widthPx <= 150 && img.heightPx <= 150 && !img.isPageBackground
 }
 
 // If a page's only visible content is one near-full-width image (e.g. a full-
@@ -210,13 +279,13 @@ export function render(doc: DocxDocument, container: HTMLElement): void {
     `position:fixed;top:-9999px;left:-9999px;visibility:hidden;pointer-events:none;width:${contentW}px;`
   document.body.appendChild(measureDiv)
 
-  // Measure each block's rendered height.
+  // Measure each block's flow height. Page-level images (backgrounds and
+  // watermarks) are absolutely positioned and contribute no flow height.
   const blockHeight: number[] = new Array(doc.blocks.length).fill(0)
   for (let i = 0; i < doc.blocks.length; i++) {
     const block = doc.blocks[i]
-    const bg = block.type === 'paragraph' ? extractPageBackground(block as ParagraphBlock) : null
-    // For bg-anchor paragraphs only the (stripped) text contributes height.
-    const toMeasure: Block | null = bg ? withoutBgRuns(block as ParagraphBlock) : block
+    const toMeasure: Block | null =
+      block.type === 'paragraph' ? flowOnly(block as ParagraphBlock, pw, ph) : block
     if (!toMeasure) continue
     const el = document.createElement('div')
     renderBlocks([toMeasure], el)
@@ -227,15 +296,31 @@ export function render(doc: DocxDocument, container: HTMLElement): void {
 
   document.body.removeChild(measureDiv)
 
-  // Greedy pagination: a block that does not fit in the remaining space on the
-  // current page starts a new page. A block taller than a full page gets its
-  // own page (it will overflow, which is unavoidable without splitting it).
-  const blockPage: number[] = new Array(doc.blocks.length).fill(0)
+  // Section starts: each section heading begins a new page. When a small icon
+  // immediately precedes a text heading, the break goes before the icon so the
+  // two stay together.
+  const n = doc.blocks.length
+  const sectionStart: boolean[] = new Array(n).fill(false)
+  for (let i = 0; i < n; i++) {
+    let heading = isHeadingBlock(doc.blocks[i])
+    // Avoid a double break when an icon already opened this section.
+    if (heading && i > 0 && sectionStart[i - 1] && isIconOnly(doc.blocks[i - 1])) {
+      heading = false
+    }
+    const iconLead = isIconOnly(doc.blocks[i]) && i + 1 < n && isHeadingBlock(doc.blocks[i + 1])
+    sectionStart[i] = heading || iconLead
+  }
+
+  // Pagination: a new page starts at a section heading, or when a block does not
+  // fit in the remaining space on the current page. A block taller than a full
+  // page gets its own page (it will overflow, unavoidable without splitting it).
+  const blockPage: number[] = new Array(n).fill(0)
   let page = 0
   let usedOnPage = 0
-  for (let i = 0; i < doc.blocks.length; i++) {
+  for (let i = 0; i < n; i++) {
     const h = blockHeight[i]
-    if (usedOnPage > 0 && usedOnPage + h > contentH) {
+    const forceBreak = sectionStart[i] && usedOnPage > 0
+    if (forceBreak || (usedOnPage > 0 && usedOnPage + h > contentH)) {
       page++
       usedOnPage = 0
     }
@@ -269,14 +354,15 @@ export function render(doc: DocxDocument, container: HTMLElement): void {
     for (let p = startPage; p < end; p++) pageBg[p] = distinctBgs[k]
   }
 
-  // ── Group renderable content into pages ────────────────────────────────────
-  // For bg-anchor blocks with text, strip the bg run and include the text.
+  // ── Group flow content (and collect watermark overlays) per page ───────────
   const pageBlocks: Block[][] = Array.from({ length: totalPages }, () => [])
+  const pageWatermarks: ImageRun[][] = Array.from({ length: totalPages }, () => [])
   for (let i = 0; i < doc.blocks.length; i++) {
     const block = doc.blocks[i]
-    const bg = block.type === 'paragraph' ? extractPageBackground(block as ParagraphBlock) : null
-    const renderable: Block | null = bg ? withoutBgRuns(block as ParagraphBlock) : block
+    const renderable: Block | null =
+      block.type === 'paragraph' ? flowOnly(block as ParagraphBlock, pw, ph) : block
     if (renderable) pageBlocks[blockPage[i]].push(renderable)
+    for (const wm of watermarksOf(block, pw, ph)) pageWatermarks[blockPage[i]].push(wm)
   }
 
   // ── Pass 2: create page divs and render content ────────────────────────────
@@ -328,7 +414,20 @@ export function render(doc: DocxDocument, container: HTMLElement): void {
     if (bgImg) styles.push(`background-image:url('${bgImg.src}')`)
     div.style.cssText = styles.join(';')
 
-    renderBlocks(blocks, div)
+    // Watermark overlays: absolutely positioned behind the text layer.
+    for (const wm of pageWatermarks[p]) {
+      const img = document.createElement('img')
+      img.src = wm.src
+      img.style.cssText =
+        'position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain;z-index:0;pointer-events:none'
+      div.appendChild(img)
+    }
+
+    // Text content sits above any watermark.
+    const content = document.createElement('div')
+    content.style.cssText = 'position:relative;z-index:1'
+    renderBlocks(blocks, content)
+    div.appendChild(content)
     container.appendChild(div)
   }
 }
