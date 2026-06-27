@@ -1,0 +1,146 @@
+import { XMLParser } from 'fast-xml-parser'
+import type { ComputedStyle } from '../types.js'
+
+export type StyleMap = Record<string, ComputedStyle>
+
+const parser = new XMLParser({
+  removeNSPrefix: true,
+  attributeNamePrefix: '',
+  ignoreAttributes: false,
+  parseAttributeValue: false,
+  isArray: (name) => name === 'style',
+})
+
+// Extract ComputedStyle from a raw rPr/pPr node (already namespace-stripped).
+export function extractRPr(rPr: Record<string, unknown> | undefined): ComputedStyle {
+  if (!rPr) return {}
+  const s: ComputedStyle = {}
+
+  // bold
+  if ('b' in rPr) {
+    const b = rPr.b as Record<string, string> | string | boolean
+    const val = typeof b === 'object' && b !== null ? (b as Record<string, string>).val : undefined
+    s.bold = val === '0' || val === 'false' || val === 'off' ? false : true
+  }
+
+  // italic
+  if ('i' in rPr) {
+    const i = rPr.i as Record<string, string> | string | boolean
+    const val = typeof i === 'object' && i !== null ? (i as Record<string, string>).val : undefined
+    s.italic = val === '0' || val === 'false' || val === 'off' ? false : true
+  }
+
+  // underline
+  if ('u' in rPr) {
+    const u = rPr.u as Record<string, string>
+    const val = typeof u === 'object' && u !== null ? u.val : undefined
+    if (val === 'none' || val === '0' || val === 'false' || val === 'off') {
+      s.underline = false
+    } else {
+      s.underline = true
+    }
+  }
+
+  // font size: w:sz stores HALF-POINTS
+  if ('sz' in rPr) {
+    const sz = rPr.sz as Record<string, string>
+    const raw = typeof sz === 'object' && sz !== null ? sz.val : String(sz)
+    const half = parseInt(raw, 10)
+    if (!isNaN(half)) s.fontSize = half / 2
+  }
+
+  // font family: prefer w:ascii, fallback w:hAnsi
+  if ('rFonts' in rPr) {
+    const fonts = rPr.rFonts as Record<string, string>
+    const family = fonts.ascii ?? fonts.hAnsi
+    if (family) s.fontFamily = family
+  }
+
+  // color: skip "auto"
+  if ('color' in rPr) {
+    const color = rPr.color as Record<string, string>
+    const val = typeof color === 'object' && color !== null ? color.val : String(color)
+    if (val && val !== 'auto') s.color = val
+  }
+
+  return s
+}
+
+export function extractPPr(pPr: Record<string, unknown> | undefined): Partial<ComputedStyle> {
+  if (!pPr) return {}
+  const s: Partial<ComputedStyle> = {}
+
+  // alignment
+  if ('jc' in pPr) {
+    const jc = pPr.jc as Record<string, string>
+    const val = typeof jc === 'object' && jc !== null ? jc.val : String(jc)
+    if (val === 'center' || val === 'right' || val === 'justify') {
+      s.alignment = val
+    } else {
+      s.alignment = 'left'
+    }
+  }
+
+  // pPr can also have rPr inside (paragraph-level run defaults)
+  if ('rPr' in pPr) {
+    Object.assign(s, extractRPr(pPr.rPr as Record<string, unknown>))
+  }
+
+  return s
+}
+
+function resolveStyleChain(
+  styleId: string,
+  rawStyles: Record<string, Record<string, unknown>>,
+  visited: Set<string>,
+): ComputedStyle {
+  if (visited.has(styleId)) {
+    console.warn(`[simple-super-doc] basedOn cycle detected at styleId "${styleId}"`)
+    return {}
+  }
+  visited.add(styleId)
+
+  const raw = rawStyles[styleId]
+  if (!raw) return {}
+
+  let base: ComputedStyle = {}
+
+  const basedOn = raw.basedOn as Record<string, string> | undefined
+  if (basedOn?.val) {
+    base = resolveStyleChain(basedOn.val, rawStyles, visited)
+  }
+
+  const pPrStyle = extractPPr(raw.pPr as Record<string, unknown> | undefined)
+  const rPrStyle = extractRPr(raw.rPr as Record<string, unknown> | undefined)
+
+  return Object.assign({}, base, pPrStyle, rPrStyle)
+}
+
+export function parseStyles(xml: string): { styleMap: StyleMap; docDefaults: ComputedStyle } {
+  const doc = parser.parse(xml)
+  const styles = doc?.styles ?? {}
+
+  // Parse docDefaults
+  const docDefaults: ComputedStyle = {}
+  const rPrDefault = styles.docDefaults?.rPrDefault?.rPr
+  if (rPrDefault) Object.assign(docDefaults, extractRPr(rPrDefault))
+  const pPrDefault = styles.docDefaults?.pPrDefault?.pPr
+  if (pPrDefault) Object.assign(docDefaults, extractPPr(pPrDefault))
+
+  // Collect raw styles by styleId
+  const rawStyles: Record<string, Record<string, unknown>> = {}
+  const styleList: unknown[] = styles.style ?? []
+  for (const s of styleList) {
+    const style = s as Record<string, unknown>
+    const id = style.styleId as string
+    if (id) rawStyles[id] = style
+  }
+
+  // Resolve each style's full chain
+  const styleMap: StyleMap = {}
+  for (const id of Object.keys(rawStyles)) {
+    styleMap[id] = resolveStyleChain(id, rawStyles, new Set<string>())
+  }
+
+  return { styleMap, docDefaults }
+}
