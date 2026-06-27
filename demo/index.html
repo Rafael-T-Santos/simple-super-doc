@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>simple-super-doc demo</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #f5f5f5;
+      min-height: 100vh;
+      display: grid;
+      grid-template-rows: auto 1fr;
+    }
+
+    header {
+      background: #1a1a2e;
+      color: #fff;
+      padding: 1rem 2rem;
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    header h1 { font-size: 1.2rem; font-weight: 600; }
+    header .badge {
+      background: #e94560;
+      color: #fff;
+      font-size: 0.7rem;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-weight: 600;
+    }
+
+    main {
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      height: calc(100vh - 56px);
+    }
+
+    aside {
+      background: #fff;
+      border-right: 1px solid #e0e0e0;
+      padding: 1.5rem;
+      overflow-y: auto;
+    }
+
+    aside h2 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; color: #888; margin-bottom: 1rem; }
+
+    #drop-zone {
+      border: 2px dashed #cbd5e1;
+      border-radius: 12px;
+      padding: 2rem 1rem;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+      color: #64748b;
+      font-size: 0.9rem;
+    }
+
+    #drop-zone:hover, #drop-zone.drag-over {
+      border-color: #e94560;
+      background: #fff5f7;
+    }
+
+    #drop-zone svg { display: block; margin: 0 auto 0.75rem; opacity: 0.4; }
+
+    #file-input { display: none; }
+
+    #status {
+      margin-top: 1rem;
+      font-size: 0.85rem;
+      color: #64748b;
+      min-height: 1.2em;
+    }
+
+    #status.error { color: #dc2626; }
+    #status.ok { color: #16a34a; }
+
+    .ir-toggle {
+      margin-top: 1.5rem;
+    }
+
+    .ir-toggle label {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.85rem;
+      cursor: pointer;
+      color: #475569;
+    }
+
+    #ir-panel {
+      margin-top: 1rem;
+      display: none;
+      background: #0f172a;
+      color: #94a3b8;
+      border-radius: 8px;
+      padding: 1rem;
+      font-size: 0.72rem;
+      font-family: 'Cascadia Code', 'Fira Code', monospace;
+      max-height: 60vh;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    #ir-panel.visible { display: block; }
+
+    #render-area {
+      background: #fff;
+      padding: 3rem 4rem;
+      overflow-y: auto;
+      line-height: 1.6;
+    }
+
+    #render-area:empty::before {
+      content: 'Drop a .docx file to see it rendered here.';
+      display: block;
+      margin-top: 4rem;
+      text-align: center;
+      color: #94a3b8;
+      font-size: 1rem;
+    }
+
+    /* Rendered document styles */
+    #render-area p { margin-bottom: 0.5em; }
+    #render-area table { border-collapse: collapse; margin: 1em 0; max-width: 100%; }
+    #render-area td, #render-area th { border: 1px solid #cbd5e1; padding: 0.4em 0.6em; vertical-align: top; }
+    #render-area ul, #render-area ol { padding-left: 1.5em; margin: 0.5em 0; }
+    #render-area li { margin-bottom: 0.25em; }
+    #render-area img { max-width: 100%; height: auto; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>simple-super-doc</h1>
+    <span class="badge">v0.1.0</span>
+  </header>
+
+  <main>
+    <aside>
+      <h2>Load document</h2>
+
+      <div id="drop-zone" role="button" tabindex="0" aria-label="Drop .docx file or click to browse">
+        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M16 12l-4-4-4 4M12 8v8"/>
+        </svg>
+        Drop a .docx file here<br/>or click to browse
+      </div>
+      <input type="file" id="file-input" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
+
+      <div id="status"></div>
+
+      <div class="ir-toggle">
+        <label>
+          <input type="checkbox" id="ir-check" /> Show typed IR (DocxDocument)
+        </label>
+        <pre id="ir-panel"></pre>
+      </div>
+    </aside>
+
+    <div id="render-area"></div>
+  </main>
+
+  <script src="index.global.js"></script>
+  <script>
+    const { parse, render } = SimpleDoc
+
+    const dropZone = document.getElementById('drop-zone')
+    const fileInput = document.getElementById('file-input')
+    const status = document.getElementById('status')
+    const renderArea = document.getElementById('render-area')
+    const irCheck = document.getElementById('ir-check')
+    const irPanel = document.getElementById('ir-panel')
+
+    let lastDoc = null
+
+    irCheck.addEventListener('change', () => {
+      irPanel.classList.toggle('visible', irCheck.checked)
+    })
+
+    dropZone.addEventListener('click', () => fileInput.click())
+    dropZone.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') fileInput.click() })
+
+    dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over') })
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'))
+    dropZone.addEventListener('drop', e => {
+      e.preventDefault()
+      dropZone.classList.remove('drag-over')
+      const file = e.dataTransfer.files[0]
+      if (file) load(file)
+    })
+
+    fileInput.addEventListener('change', () => {
+      if (fileInput.files[0]) load(fileInput.files[0])
+    })
+
+    async function load(file) {
+      status.className = ''
+      status.textContent = `Loading ${file.name}…`
+      renderArea.innerHTML = ''
+      irPanel.textContent = ''
+      lastDoc = null
+
+      try {
+        const buffer = await file.arrayBuffer()
+        const doc = await parse(buffer)
+        lastDoc = doc
+
+        render(doc, renderArea)
+
+        status.className = 'ok'
+        status.textContent = `Rendered — ${doc.blocks.length} blocks`
+
+        if (irCheck.checked) {
+          irPanel.textContent = JSON.stringify(doc, null, 2)
+        }
+      } catch (err) {
+        status.className = 'error'
+        status.textContent = err.message || String(err)
+        console.error(err)
+      }
+    }
+  </script>
+</body>
+</html>
