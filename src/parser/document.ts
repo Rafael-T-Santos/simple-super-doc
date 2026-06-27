@@ -17,7 +17,7 @@ const parser = new XMLParser({
   ignoreAttributes: false,
   parseAttributeValue: false,
   isArray: (name) =>
-    ['p', 'r', 'tr', 'tc', 'style', 'abstractNum', 'num', 'lvl', 'lvlOverride',
+    ['p', 'r', 'tbl', 'tr', 'tc', 'style', 'abstractNum', 'num', 'lvl', 'lvlOverride',
      'hyperlink', 'bookmarkStart', 'ins', 'del'].includes(name),
 })
 
