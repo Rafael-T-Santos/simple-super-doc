@@ -134,65 +134,74 @@ export function render(doc: DocxDocument, container: HTMLElement): void {
     return
   }
 
-  // Page-aware rendering: group content between background images into page divs
+  // Page-aware rendering: each behindDoc=1 anchor starts a new section div.
+  // Without explicit page breaks we can only approximate pagination — content
+  // may overflow the page background vertically, which is intentional.
   const ps = doc.pageSize
   const pw = ps?.widthPx ?? 0
   const ph = ps?.heightPx ?? 0
   const pm = ps?.marginPx ?? { top: 96, right: 96, bottom: 64, left: 96 }
 
   let pageDiv: HTMLElement | null = null
+  let currentBgSrc = ''
   let pendingBlocks: Block[] = []
 
   const flushPage = () => {
-    if (pageDiv && pendingBlocks.length > 0) {
-      renderBlocks(pendingBlocks, pageDiv)
-    }
+    if (pageDiv && pendingBlocks.length > 0) renderBlocks(pendingBlocks, pageDiv)
     pendingBlocks = []
+  }
+
+  const createPageDiv = (bg: ImageRun) => {
+    flushPage()
+    const div = document.createElement('div')
+    div.className = 'ssd-page'
+    // background-size uses fixed pixel height so the image renders at exactly
+    // one page height even when content overflows below it.
+    const bgH = ph > 0 ? `${ph}px` : 'auto'
+    const styles = [
+      'position:relative',
+      'box-sizing:border-box',
+      'background-repeat:no-repeat',
+      'background-position:top center',
+      `background-size:100% ${bgH}`,
+      `background-image:url('${bg.src}')`,
+      `padding:${pm.top}px ${pm.right}px ${pm.bottom}px ${pm.left}px`,
+      'margin:0 auto 16px',
+      'box-shadow:0 2px 12px rgba(0,0,0,.25)',
+    ]
+    if (pw > 0) styles.push(`width:${pw}px`, `min-height:${ph}px`)
+    div.style.cssText = styles.join(';')
+    container.appendChild(div)
+    pageDiv = div
+    currentBgSrc = bg.src
   }
 
   for (const block of doc.blocks) {
     const bg = block.type === 'paragraph' ? extractPageBackground(block as ParagraphBlock) : null
 
     if (bg) {
-      flushPage()
+      // Collapse consecutive anchors with the same image when nothing has been
+      // queued between them — avoids empty phantom page divs.
+      const collapse = pageDiv !== null && bg.src === currentBgSrc && pendingBlocks.length === 0
 
-      const div = document.createElement('div')
-      div.className = 'ssd-page'
+      if (!collapse) createPageDiv(bg)
 
-      const styles = [
-        'position:relative',
-        'box-sizing:border-box',
-        'background-repeat:no-repeat',
-        'background-position:center',
-        'background-size:100% 100%',
-        `background-image:url('${bg.src}')`,
-        `padding:${pm.top}px ${pm.right}px ${pm.bottom}px ${pm.left}px`,
-        'margin:0 auto 16px',
-        'box-shadow:0 2px 12px rgba(0,0,0,.25)',
-        'overflow:hidden',
-      ]
-      if (pw > 0) styles.push(`width:${pw}px`, `min-height:${ph}px`)
-
-      div.style.cssText = styles.join(';')
-      container.appendChild(div)
-      pageDiv = div
-
-      // Render any non-background runs in this same paragraph (usually empty)
+      // Render any non-background runs in this same paragraph
       const otherRuns = (block as ParagraphBlock).runs.filter(r => !(r as ImageRun).isPageBackground)
       if (otherRuns.some(r => r.type !== 'run' || (r as TextRun).text)) {
-        const p = document.createElement('p')
-        const css = styleToCss((block as ParagraphBlock).style)
-        if (css) p.style.cssText = css
-        for (const run of otherRuns) renderRun(run, p)
-        if (p.textContent || p.children.length) pageDiv.appendChild(p)
+        if (pageDiv) {
+          const p = document.createElement('p')
+          const css = styleToCss((block as ParagraphBlock).style)
+          if (css) p.style.cssText = css
+          for (const run of otherRuns) renderRun(run, p)
+          if (p.textContent || p.children.length) pageDiv.appendChild(p)
+        }
       }
     } else {
       if (pageDiv) {
         pendingBlocks.push(block)
       } else {
-        // Content before any page background — render directly
-        const tmp: Block[] = [block]
-        renderBlocks(tmp, container)
+        renderBlocks([block], container)
       }
     }
   }
