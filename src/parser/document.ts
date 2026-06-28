@@ -80,7 +80,7 @@ function resolveListRef(
   const start = numEntry.startOverride ?? levelInfo.start
   const ordered = levelInfo.format !== 'bullet' && levelInfo.format !== 'none'
 
-  return { numId, ilvl, ordered, start }
+  return { numId, ilvl, ordered, start, format: levelInfo.format }
 }
 
 async function parseRun(

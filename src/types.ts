@@ -50,9 +50,10 @@ export type TableCell = {
 // start is resolved at parse time from abstractNum + any lvlOverride.
 export type ListRef = {
   numId: string
-  ilvl: number      // only 0 supported in v0.1.0
+  ilvl: number      // nesting level (0 = top); nested levels render as nested lists
   ordered: boolean  // true = numbered, false = bullet
   start: number
+  format: string    // OOXML w:numFmt val (decimal, lowerLetter, lowerRoman, bullet, ...)
 }
 
 export type ComputedStyle = {

@@ -119,41 +119,66 @@ function renderTable(block: TableBlock, container: HTMLElement): void {
   container.appendChild(table)
 }
 
-function renderBlocks(blocks: Block[], container: HTMLElement): void {
-  let currentList: HTMLElement | null = null
-  let currentNumId: string | null = null
-  let currentOrdered: boolean | null = null
+// OOXML w:numFmt -> CSS list-style-type so nested levels show a/b/c, i/ii/iii,
+// etc. instead of every <ol> defaulting to decimal.
+const LIST_STYLE: Record<string, string> = {
+  decimal: 'decimal',
+  decimalZero: 'decimal-leading-zero',
+  lowerLetter: 'lower-alpha',
+  upperLetter: 'upper-alpha',
+  lowerRoman: 'lower-roman',
+  upperRoman: 'upper-roman',
+  bullet: 'disc',
+  none: 'none',
+}
 
-  const closeList = (): void => {
-    if (currentList) {
-      container.appendChild(currentList)
-      currentList = null
-      currentNumId = null
-      currentOrdered = null
-    }
+// One open list level while rendering nested lists. The stack's depth tracks
+// the current w:ilvl; index i holds the <ol>/<ul> for level i.
+type ListFrame = { el: HTMLElement; numId: string; lastLi: HTMLElement | null }
+
+function renderBlocks(blocks: Block[], container: HTMLElement): void {
+  // The list stack: stack[i] is the open list at ilvl i. stack[0] is the root
+  // list (appended to container when the whole group closes); deeper levels are
+  // nested inside the parent level's most recent <li>.
+  let stack: ListFrame[] = []
+
+  const closeLists = (): void => {
+    if (stack.length > 0) container.appendChild(stack[0].el)
+    stack = []
   }
 
   for (const block of blocks) {
     if (block.type === 'paragraph' && block.list) {
-      const { numId, ordered, start } = block.list
+      const { numId, ordered, start, ilvl, format } = block.list
 
-      if (numId !== currentNumId || ordered !== currentOrdered) {
-        closeList()
-        currentList = document.createElement(ordered ? 'ol' : 'ul')
-        if (ordered) (currentList as HTMLOListElement).start = start
-        currentNumId = numId
-        currentOrdered = ordered
+      // A different list (different numId) at the base ends the previous one.
+      if (stack.length > 0 && stack[0].numId !== numId) closeLists()
+
+      // Close deeper levels until the stack is exactly ilvl+1 deep or shorter.
+      while (stack.length > ilvl + 1) stack.pop()
+
+      // Open nested lists until the stack reaches ilvl+1 deep. Intermediate
+      // levels (when an item jumps more than one level) inherit this item's
+      // format/start, which is rare and good enough.
+      while (stack.length < ilvl + 1) {
+        const listEl = document.createElement(ordered ? 'ol' : 'ul')
+        if (ordered) (listEl as HTMLOListElement).start = start
+        const styleType = LIST_STYLE[format]
+        if (styleType) listEl.style.listStyleType = styleType
+        const parent = stack[stack.length - 1]
+        if (parent) (parent.lastLi ?? parent.el).appendChild(listEl)
+        stack.push({ el: listEl, numId, lastLi: null })
       }
 
+      const frame = stack[stack.length - 1]
       const li = document.createElement('li')
       const css = styleToCss(block.style)
       if (css) li.style.cssText = css
-      for (const run of block.runs) {
-        renderRun(run, li)
-      }
-      currentList!.appendChild(li)
+      for (const run of block.runs) renderRun(run, li)
+      frame.el.appendChild(li)
+      frame.lastLi = li
     } else {
-      closeList()
+      closeLists()
 
       if (block.type === 'paragraph') {
         container.appendChild(renderParagraph(block))
@@ -163,7 +188,7 @@ function renderBlocks(blocks: Block[], container: HTMLElement): void {
     }
   }
 
-  closeList()
+  closeLists()
 }
 
 export function render(doc: DocxDocument, container: HTMLElement): void {
