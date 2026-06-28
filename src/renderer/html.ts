@@ -48,7 +48,7 @@ const LINE_HEIGHT = 1.15
 // Empty paragraphs in Word occupy a full line; the document's fallback fonts
 // render that line taller than the bare line-height, so use a slightly larger
 // multiplier to keep flow positions (e.g. the cover's customer name) aligned.
-const EMPTY_LINE_EM = 1.5
+const EMPTY_LINE_EM = 1.7
 
 function ensureLineBox(el: HTMLElement): void {
   // Empty runs still create (empty) text nodes, so check for visible content
