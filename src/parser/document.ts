@@ -16,6 +16,10 @@ const parser = new XMLParser({
   attributeNamePrefix: '',
   ignoreAttributes: false,
   parseAttributeValue: false,
+  // Preserve significant whitespace in <w:t xml:space="preserve"> runs. The
+  // default (trimValues: true) strips leading/trailing spaces, which silently
+  // joins words across runs ("WHEREAS the" -> "WHEREASthe").
+  trimValues: false,
   isArray: (name) =>
     ['p', 'r', 'tbl', 'tr', 'tc', 'style', 'abstractNum', 'num', 'lvl', 'lvlOverride',
      'hyperlink', 'bookmarkStart', 'ins', 'del'].includes(name),
