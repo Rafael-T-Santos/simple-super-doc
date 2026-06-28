@@ -1,4 +1,9 @@
 import type { DocxDocument, Block, ParagraphBlock, TableBlock, TextRun, ImageRun, Run, ComputedStyle } from '../types.js'
+import {
+  EMPTY_LINE_EM, LINE_HEIGHT,
+  extractPageBackground, isBlockVisible, isHeadingBlock, isIconOnly,
+  fullPageImage, flowOnly, watermarksOf,
+} from './layout.js'
 
 function styleToCss(s: ComputedStyle): string {
   const parts: string[] = []
@@ -39,16 +44,7 @@ function renderRun(run: Run, parent: HTMLElement): void {
   }
 }
 
-// Word's default line spacing (docDefaults w:line="276" w:lineRule="auto") = 1.15.
-const LINE_HEIGHT = 1.15
-
-// An empty <p> collapses to height 0 in the browser, but in Word an empty
-// paragraph occupies one line at its paragraph-mark font size. Force a
-// min-height of one line so measured heights stay aligned with Word's layout.
-// Empty paragraphs in Word occupy a full line; the document's fallback fonts
-// render that line taller than the bare line-height, so use a slightly larger
-// multiplier to keep flow positions (e.g. the cover's customer name) aligned.
-const EMPTY_LINE_EM = 1.7
+// LINE_HEIGHT and EMPTY_LINE_EM live in ./layout (see their docs there).
 
 function ensureLineBox(el: HTMLElement): void {
   // Empty runs still create (empty) text nodes, so check for visible content
@@ -144,128 +140,6 @@ function renderBlocks(blocks: Block[], container: HTMLElement): void {
   }
 
   closeList()
-}
-
-// Return the isPageBackground ImageRun from a paragraph, or null.
-function extractPageBackground(block: ParagraphBlock): ImageRun | null {
-  for (const run of block.runs) {
-    if (run.type === 'image' && (run as ImageRun).isPageBackground) return run as ImageRun
-  }
-  return null
-}
-
-// A large floating image (e.g. the document's watermark/decorative frame) that
-// overlays the page rather than flowing with text. Excludes page backgrounds,
-// small heading/icon images, and the near-full-width closing slide (which is
-// handled as its own edge-to-edge page).
-function isWatermark(img: ImageRun, pw: number, ph: number): boolean {
-  if (img.isPageBackground) return false
-  return img.heightPx >= ph * 0.4 && img.widthPx < pw * 0.85
-}
-
-// A "page-level" image is either a behindDoc background or a watermark — neither
-// participates in text flow.
-function isPageLevelImage(run: Run, pw: number, ph: number): boolean {
-  return run.type === 'image' &&
-    ((run as ImageRun).isPageBackground || isWatermark(run as ImageRun, pw, ph))
-}
-
-// Return the paragraph with page-level images (background + watermark) stripped,
-// leaving the content that flows with text. A paragraph that was ONLY a page-
-// level image carrier is dropped (null); an originally-empty paragraph is kept
-// because it acts as a vertical spacer (e.g. on the cover).
-function flowOnly(block: ParagraphBlock, pw: number, ph: number): ParagraphBlock | null {
-  const hadPageImage = block.runs.some(r => isPageLevelImage(r, pw, ph))
-  const runs = block.runs.filter(r => !isPageLevelImage(r, pw, ph))
-  if (hadPageImage) {
-    const hasContent = runs.some(r => r.type !== 'run' || (r as TextRun).text.length > 0)
-    if (!hasContent) return null
-  }
-  return { ...block, runs }
-}
-
-// All watermark images carried by a block (for overlay rendering).
-function watermarksOf(block: Block, pw: number, ph: number): ImageRun[] {
-  if (block.type !== 'paragraph') return []
-  return block.runs.filter(
-    r => r.type === 'image' && isWatermark(r as ImageRun, pw, ph),
-  ) as ImageRun[]
-}
-
-// Does the block carry any visible content (non-whitespace text or an image)?
-function isBlockVisible(block: Block): boolean {
-  if (block.type === 'table') return true
-  for (const run of block.runs) {
-    if (run.type === 'image') return true
-    if ((run as TextRun).text.trim().length > 0) return true
-  }
-  return false
-}
-
-// Section headings start a new page in this template family. A heading is a
-// large-text paragraph or a wide-short "text-as-image" banner (e.g. the
-// "Condições Comerciais" / "Outras informações" headings, which are images).
-const HEADING_MIN_PT = 24
-
-function headingImage(block: Block): boolean {
-  if (block.type !== 'paragraph') return false
-  for (const run of block.runs) {
-    if (run.type !== 'image') continue
-    const img = run as ImageRun
-    if (img.isPageBackground) continue
-    if (img.widthPx >= 300 && img.heightPx <= 70 && img.widthPx / img.heightPx >= 5) {
-      return true
-    }
-  }
-  return false
-}
-
-function isHeadingBlock(block: Block): boolean {
-  if (block.type !== 'paragraph') return false
-  if (headingImage(block)) return true
-  for (const run of block.runs) {
-    if (run.type === 'run' && (run as TextRun).text.trim() && (run.style.fontSize ?? 0) >= HEADING_MIN_PT) {
-      return true
-    }
-  }
-  return false
-}
-
-// A small standalone icon (e.g. the 70x70 section glyph) that precedes a text
-// heading should travel with it, so the page break goes before the icon.
-function isIconOnly(block: Block): boolean {
-  if (block.type !== 'paragraph') return false
-  let img: ImageRun | null = null
-  for (const run of block.runs) {
-    if (run.type === 'image') {
-      if (img) return false
-      img = run as ImageRun
-    } else if ((run as TextRun).text.trim().length > 0) {
-      return false
-    }
-  }
-  return !!img && img.widthPx <= 150 && img.heightPx <= 150 && !img.isPageBackground
-}
-
-// If a page's only visible content is one near-full-width image (e.g. a full-
-// bleed closing slide), return it so it can be rendered edge-to-edge.
-function fullPageImage(blocks: Block[], pageWidthPx: number): ImageRun | null {
-  let found: ImageRun | null = null
-  for (const block of blocks) {
-    if (block.type !== 'paragraph') {
-      if (isBlockVisible(block)) return null
-      continue
-    }
-    for (const run of block.runs) {
-      if (run.type === 'image') {
-        if (found) return null
-        found = run as ImageRun
-      } else if ((run as TextRun).text.trim().length > 0) {
-        return null
-      }
-    }
-  }
-  return found && found.widthPx >= pageWidthPx * 0.85 ? found : null
 }
 
 export function render(doc: DocxDocument, container: HTMLElement): void {
