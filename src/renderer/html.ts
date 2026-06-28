@@ -116,13 +116,17 @@ function sanitizeHref(href: string): string {
   return '#'
 }
 
-// LINE_HEIGHT and EMPTY_LINE_EM live in ./layout (see their docs there).
+// Empty-paragraph line height, set per render(): template covers (hasPageBg)
+// need a taller empty line to match Word's layout (EMPTY_LINE_EM); plain
+// documents use a normal single line (LINE_HEIGHT) so blank lines don't bloat
+// the page. LINE_HEIGHT and EMPTY_LINE_EM live in ./layout.
+let emptyLineEm = LINE_HEIGHT
 
 function ensureLineBox(el: HTMLElement): void {
   // Empty runs still create (empty) text nodes, so check for visible content
   // rather than child count. Images carry their own height.
   if (!el.textContent && !el.querySelector('img')) {
-    el.style.minHeight = `${EMPTY_LINE_EM}em`
+    el.style.minHeight = `${emptyLineEm}em`
   }
 }
 
@@ -138,6 +142,7 @@ function renderParagraph(block: ParagraphBlock): HTMLElement {
     renderRun(run, p)
   }
   ensureLineBox(p)
+  if (block.pageBreakBefore) p.dataset.ssdBreak = '1'
   return p
 }
 
@@ -239,16 +244,99 @@ function renderBlocks(blocks: Block[], container: HTMLElement): void {
   closeLists()
 }
 
+type PageMargins = { top: number; right: number; bottom: number; left: number }
+
+// Page box styling shared by paginated renders (white sheet on the host bg).
+function pageBoxStyle(pw: number, ph: number, pm: PageMargins, extra: string[] = []): string {
+  return [
+    'position:relative',
+    'box-sizing:border-box',
+    'background-color:#fff',
+    'margin:0 auto 16px',
+    'box-shadow:0 2px 12px rgba(0,0,0,.25)',
+    `width:${pw}px`,
+    `min-height:${ph}px`,
+    `padding:${pm.top}px ${pm.right}px ${pm.bottom}px ${pm.left}px`,
+    ...extra,
+  ].join(';')
+}
+
+// Paginate a plain document (no full-page background) by rendering the whole
+// flow once and distributing the resulting top-level elements into page boxes by
+// their real laid-out heights. This is exact — it accounts for margin collapsing
+// and grouped lists, which a per-block measurement cannot.
+function renderPlainPaginated(
+  doc: DocxDocument, container: HTMLElement, pw: number, ph: number, pm: PageMargins,
+): void {
+  const contentW = pw - pm.left - pm.right
+  const contentH = ph - pm.top - pm.bottom
+
+  // Stage the full flow hidden, in the page's font/width context.
+  const stage = document.createElement('div')
+  stage.className = 'ssd-page'
+  stage.style.cssText =
+    `position:absolute;left:-9999px;top:0;visibility:hidden;width:${contentW}px;` +
+    `padding:0;margin:0;min-height:0;box-shadow:none;background:none`
+  container.appendChild(stage)
+  renderBlocks(doc.blocks, stage)
+
+  // Effective height of each top-level element = distance to the next sibling's
+  // top (captures collapsed margins); the last uses the stage's full height.
+  const children = Array.from(stage.children) as HTMLElement[]
+  const tops = children.map(c => c.offsetTop)
+  const stageH = stage.scrollHeight
+  const heights = children.map((_, i) => (i + 1 < children.length ? tops[i + 1] : stageH) - tops[i])
+
+  const newPage = (): HTMLElement => {
+    const div = document.createElement('div')
+    div.className = 'ssd-page'
+    div.style.cssText = pageBoxStyle(pw, ph, pm)
+    container.appendChild(div)
+    return div
+  }
+
+  let pageDiv = newPage()
+  let used = 0
+  for (let i = 0; i < children.length; i++) {
+    const h = heights[i]
+    const forced = children[i].dataset.ssdBreak === '1'
+    if ((forced && used > 0) || (used > 0 && used + h > contentH)) {
+      pageDiv = newPage()
+      used = 0
+    }
+    pageDiv.appendChild(children[i]) // moves the node out of the stage
+    used += h
+  }
+  stage.remove()
+
+  // Footnotes/endnotes on their own final page.
+  const noteHost = document.createElement('div')
+  renderNotes(doc, noteHost)
+  if (noteHost.childNodes.length > 0) {
+    const div = newPage()
+    while (noteHost.firstChild) div.appendChild(noteHost.firstChild)
+  }
+}
+
 export function render(doc: DocxDocument, container: HTMLElement): void {
   const hasPageBg = doc.blocks.some(
     b => b.type === 'paragraph' && extractPageBackground(b as ParagraphBlock) !== null,
   )
+
+  // Template covers rely on tall empty spacer lines; plain documents must not.
+  emptyLineEm = hasPageBg ? EMPTY_LINE_EM : LINE_HEIGHT
 
   const ps = doc.pageSize
   // Without a page size we can't lay out pages — fall back to continuous flow.
   if (!ps || ps.widthPx === 0 || ps.heightPx === 0) {
     renderBlocks(doc.blocks, container)
     renderNotes(doc, container)
+    return
+  }
+
+  // Plain documents: exact flow-based pagination into white page boxes.
+  if (!hasPageBg) {
+    renderPlainPaginated(doc, container, ps.widthPx, ps.heightPx, ps.marginPx)
     return
   }
 
@@ -264,10 +352,16 @@ export function render(doc: DocxDocument, container: HTMLElement): void {
     hasPageBg && block.type === 'paragraph' ? flowOnly(block as ParagraphBlock, pw, ph) : block
 
   // ── Pass 1: measure each block's flow height in a hidden container ──────────
+  // Measure in the SAME visual context the pages render in: append to the host
+  // container with the .ssd-page class so it inherits the host's font and
+  // line-height. Measuring at document.body level (different font/line-height)
+  // mis-estimates heights and overflows the page boxes.
   const measureDiv = document.createElement('div')
+  measureDiv.className = 'ssd-page'
   measureDiv.style.cssText =
-    `position:fixed;top:-9999px;left:-9999px;visibility:hidden;pointer-events:none;width:${contentW}px;`
-  document.body.appendChild(measureDiv)
+    `position:fixed;top:-9999px;left:-9999px;visibility:hidden;pointer-events:none;` +
+    `width:${contentW}px;padding:0;margin:0;min-height:0;box-shadow:none;background:none`
+  container.appendChild(measureDiv)
 
   const blockHeight: number[] = new Array(doc.blocks.length).fill(0)
   for (let i = 0; i < doc.blocks.length; i++) {
@@ -280,7 +374,7 @@ export function render(doc: DocxDocument, container: HTMLElement): void {
     measureDiv.removeChild(el)
   }
 
-  document.body.removeChild(measureDiv)
+  container.removeChild(measureDiv)
 
   // Forced page breaks: w:pageBreakBefore always; section headings only for
   // template documents (the heading heuristic is template-shaped — a plain doc

@@ -5,7 +5,7 @@ import type {
   TextRun, ImageRun, Run, ComputedStyle, ListRef,
 } from '../types.js'
 import type { StyleMap } from './styles.js'
-import { extractRPr, extractPPr } from './styles.js'
+import { extractRPr, extractPPr, extractMarkRPr } from './styles.js'
 import type { AbstractNumMap, NumMap } from './numbering.js'
 import type { RelationshipMap } from './relationships.js'
 import { resolveVMerge, type RawCell } from './table.js'
@@ -244,9 +244,16 @@ async function parseParagraph(
     if (run !== null) runs.push(run)
   }
 
+  // For an empty paragraph the paragraph-mark run properties (pPr > rPr) set the
+  // line's font/metrics; for a paragraph with text they apply only to the mark
+  // glyph and must NOT bold/resize the runs, so we fold them into the block
+  // style only when there is no visible run.
+  const hasVisible = runs.some(r => r.type === 'image' || (r as TextRun).text.trim().length > 0)
+  const blockStyle = hasVisible ? paraStyle : Object.assign({}, paraStyle, extractMarkRPr(pPr))
+
   return {
     type: 'paragraph',
-    style: paraStyle,
+    style: blockStyle,
     runs,
     ...(list ? { list } : {}),
     ...(pageBreakBefore ? { pageBreakBefore: true } : {}),

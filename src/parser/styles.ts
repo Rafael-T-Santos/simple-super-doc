@@ -88,12 +88,20 @@ export function extractPPr(pPr: Record<string, unknown> | undefined): Partial<Co
     }
   }
 
-  // pPr can also have rPr inside (paragraph-level run defaults)
-  if ('rPr' in pPr) {
-    Object.assign(s, extractRPr(pPr.rPr as Record<string, unknown>))
-  }
+  // NOTE: pPr can also contain an <w:rPr> — but that is the PARAGRAPH MARK's run
+  // properties (the ¶ glyph), which must NOT cascade onto the paragraph's text
+  // runs (e.g. a bold mark would wrongly bold the whole line). It is read
+  // separately by the caller (see extractMarkRPr) and applied only to the mark
+  // / empty paragraphs.
 
   return s
+}
+
+// The paragraph mark's run properties (pPr > rPr). Used for an empty paragraph's
+// line metrics; NOT inherited by the paragraph's text runs.
+export function extractMarkRPr(pPr: Record<string, unknown> | undefined): ComputedStyle {
+  if (!pPr || !('rPr' in pPr)) return {}
+  return extractRPr(pPr.rPr as Record<string, unknown>)
 }
 
 function resolveStyleChain(
