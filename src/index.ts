@@ -1,12 +1,12 @@
 import JSZip from 'jszip'
-import { DocxParseError, type DocxDocument } from './types.js'
+import { DocxParseError, type DocxDocument, type NoteEntry } from './types.js'
 import { parseRelationships } from './parser/relationships.js'
 import { parseStyles } from './parser/styles.js'
 import { parseNumbering, emptyNumbering } from './parser/numbering.js'
-import { parseDocument } from './parser/document.js'
+import { parseDocument, parseNotesXml, type ParseContext } from './parser/document.js'
 import { render as renderHtml } from './renderer/html.js'
 
-export type { DocxDocument, Block, ParagraphBlock, TableBlock, TableCell, TableRow, TextRun, ImageRun, Run, ComputedStyle, ListRef } from './types.js'
+export type { DocxDocument, Block, ParagraphBlock, TableBlock, TableCell, TableRow, TextRun, ImageRun, Run, ComputedStyle, ListRef, NoteEntry } from './types.js'
 export { DocxParseError } from './types.js'
 
 function parsePageSize(xml: string): DocxDocument['pageSize'] {
@@ -56,11 +56,13 @@ export async function parse(buffer: ArrayBuffer): Promise<DocxDocument> {
     throw new DocxParseError('Failed to load zip archive', 'INVALID_ZIP')
   }
 
-  const [documentXml, stylesXml, relsXml, numberingXml] = await Promise.all([
+  const [documentXml, stylesXml, relsXml, numberingXml, footnotesXml, endnotesXml] = await Promise.all([
     readEntry(zip, 'word/document.xml', true),
     readEntry(zip, 'word/styles.xml', true),
     readEntry(zip, 'word/_rels/document.xml.rels', false),
     readEntry(zip, 'word/numbering.xml', false),
+    readEntry(zip, 'word/footnotes.xml', false),
+    readEntry(zip, 'word/endnotes.xml', false),
   ])
 
   const relationshipMap = relsXml ? parseRelationships(relsXml) : {}
@@ -69,16 +71,46 @@ export async function parse(buffer: ArrayBuffer): Promise<DocxDocument> {
     ? parseNumbering(numberingXml)
     : emptyNumbering()
 
-  const blocks = await parseDocument(documentXml, {
+  const ctx: ParseContext = {
     styleMap,
     docDefaults,
     abstractNumMap,
     numMap,
     relationshipMap,
     zip,
-  })
+    footnoteRefs: [],
+    endnoteRefs: [],
+  }
 
-  return { blocks, pageSize: parsePageSize(documentXml) }
+  // Parse the body first so footnote/endnote references are numbered in order.
+  const blocks = await parseDocument(documentXml, ctx)
+
+  // Resolve only the notes actually referenced, in reference order.
+  const footnotes = await resolveNotes(footnotesXml, 'footnote', ctx.footnoteRefs, ctx)
+  const endnotes = await resolveNotes(endnotesXml, 'endnote', ctx.endnoteRefs, ctx)
+
+  return {
+    blocks,
+    pageSize: parsePageSize(documentXml),
+    ...(footnotes.length ? { footnotes } : {}),
+    ...(endnotes.length ? { endnotes } : {}),
+  }
+}
+
+async function resolveNotes(
+  xml: string | null,
+  kind: 'footnote' | 'endnote',
+  refIds: string[],
+  ctx: ParseContext,
+): Promise<NoteEntry[]> {
+  if (!xml || refIds.length === 0) return []
+  const map = await parseNotesXml(xml, kind, ctx)
+  const entries: NoteEntry[] = []
+  refIds.forEach((id, i) => {
+    const noteBlocks = map.get(id)
+    if (noteBlocks) entries.push({ number: i + 1, blocks: noteBlocks })
+  })
+  return entries
 }
 
 export function render(doc: DocxDocument, container: HTMLElement): void {

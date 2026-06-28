@@ -45,6 +45,21 @@ function renderRun(run: Run, parent: HTMLElement): void {
   }
 
   const textRun = run as TextRun
+
+  // Footnote/endnote marker: a superscript number linking to the notes section.
+  if (textRun.noteRef) {
+    const { type, number } = textRun.noteRef
+    const prefix = type === 'footnote' ? 'fn' : 'en'
+    const sup = document.createElement('sup')
+    sup.id = `${prefix}ref-${number}`
+    const a = document.createElement('a')
+    a.setAttribute('href', `#${prefix}-${number}`)
+    a.textContent = String(number)
+    sup.appendChild(a)
+    target.appendChild(sup)
+    return
+  }
+
   const css = styleToCss(textRun.style)
 
   if (css) {
@@ -55,6 +70,39 @@ function renderRun(run: Run, parent: HTMLElement): void {
     target.appendChild(span)
   } else {
     target.appendChild(document.createTextNode(textRun.text))
+  }
+}
+
+// Render the footnote and endnote sections at the end of the document. Each note
+// is an <li> (numbered to match its in-text marker) with a back-reference link.
+function renderNotes(doc: DocxDocument, container: HTMLElement): void {
+  const sections: Array<{ kind: 'footnote' | 'endnote'; prefix: string; label: string; notes: DocxDocument['footnotes'] }> = [
+    { kind: 'footnote', prefix: 'fn', label: 'Footnotes', notes: doc.footnotes },
+    { kind: 'endnote', prefix: 'en', label: 'Endnotes', notes: doc.endnotes },
+  ]
+  for (const { prefix, label, notes } of sections) {
+    if (!notes || notes.length === 0) continue
+    const section = document.createElement('section')
+    section.className = `ssd-${prefix === 'fn' ? 'footnotes' : 'endnotes'}`
+    const hr = document.createElement('hr')
+    section.appendChild(hr)
+    const heading = document.createElement('h2')
+    heading.textContent = label
+    heading.style.cssText = 'font-size:1em'
+    section.appendChild(heading)
+    const ol = document.createElement('ol')
+    for (const note of notes) {
+      const li = document.createElement('li')
+      li.id = `${prefix}-${note.number}`
+      renderBlocks(note.blocks, li)
+      const back = document.createElement('a')
+      back.setAttribute('href', `#${prefix}ref-${note.number}`)
+      back.textContent = ' ↩'
+      li.appendChild(back)
+      ol.appendChild(li)
+    }
+    section.appendChild(ol)
+    container.appendChild(section)
   }
 }
 
@@ -198,12 +246,14 @@ export function render(doc: DocxDocument, container: HTMLElement): void {
 
   if (!hasPageBg) {
     renderBlocks(doc.blocks, container)
+    renderNotes(doc, container)
     return
   }
 
   const ps = doc.pageSize
   if (!ps || ps.widthPx === 0 || ps.heightPx === 0) {
     renderBlocks(doc.blocks, container)
+    renderNotes(doc, container)
     return
   }
 
@@ -372,4 +422,6 @@ export function render(doc: DocxDocument, container: HTMLElement): void {
     div.appendChild(content)
     container.appendChild(div)
   }
+
+  renderNotes(doc, container)
 }

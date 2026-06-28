@@ -22,7 +22,7 @@ const parser = new XMLParser({
   trimValues: false,
   isArray: (name) =>
     ['p', 'r', 'tbl', 'tr', 'tc', 'style', 'abstractNum', 'num', 'lvl', 'lvlOverride',
-     'hyperlink', 'bookmarkStart', 'ins', 'del'].includes(name),
+     'hyperlink', 'bookmarkStart', 'ins', 'del', 'footnote', 'endnote'].includes(name),
 })
 
 export type ParseContext = {
@@ -32,6 +32,9 @@ export type ParseContext = {
   numMap: NumMap
   relationshipMap: RelationshipMap
   zip: JSZip
+  // Footnote/endnote ids in document order; index+1 is the printed number.
+  footnoteRefs: string[]
+  endnoteRefs: string[]
 }
 
 function getVal(node: unknown): string | undefined {
@@ -91,14 +94,32 @@ async function parseRun(
 ): Promise<Run | null> {
   const rPr = r.rPr as Record<string, unknown> | undefined
 
-  // Skip field characters and line breaks silently
+  // Skip field characters, line breaks, and a note's own auto-number marker.
   if ('fldChar' in r || 'instrText' in r || 'br' in r) return null
+  if ('footnoteRef' in r || 'endnoteRef' in r) return null
 
   // Character style at cascade level 2 for this specific run
   const rStyleId = getVal(rPr?.rStyle as unknown)
   const charStyle = rStyleId ? (ctx.styleMap[rStyleId] ?? {}) : {}
 
   const runStyle = Object.assign({}, paraStyle, charStyle, extractRPr(rPr))
+
+  // Footnote/endnote reference: emit a numbered marker run. The number is the
+  // position of this reference among same-type references in document order.
+  const noteEl = (r.footnoteReference ?? r.endnoteReference) as Record<string, string> | undefined
+  if (noteEl !== undefined) {
+    const isFoot = 'footnoteReference' in r
+    const id = String(noteEl.id ?? '')
+    const refs = isFoot ? ctx.footnoteRefs : ctx.endnoteRefs
+    refs.push(id)
+    const marker: TextRun = {
+      type: 'run',
+      text: String(refs.length),
+      style: runStyle,
+      noteRef: { type: isFoot ? 'footnote' : 'endnote', number: refs.length },
+    }
+    return marker
+  }
 
   // Image via drawing
   if ('drawing' in r) {
@@ -328,4 +349,25 @@ export async function parseDocument(xml: string, ctx: ParseContext): Promise<Blo
   if (!body) return []
   const order = getBodyBlockOrder(xml)
   return parseBlockContainer(body, ctx, order)
+}
+
+// Parse footnotes.xml / endnotes.xml into a map of note id -> content blocks.
+// `kind` is 'footnote' or 'endnote'; the root/child element names follow it.
+export async function parseNotesXml(
+  xml: string,
+  kind: 'footnote' | 'endnote',
+  ctx: ParseContext,
+): Promise<Map<string, Block[]>> {
+  const map = new Map<string, Block[]>()
+  const doc = parser.parse(xml) as Record<string, unknown>
+  const root = doc?.[`${kind}s`] as Record<string, unknown> | undefined
+  const notes = (root?.[kind] ?? []) as Record<string, unknown>[]
+  for (const note of notes) {
+    const id = String((note as Record<string, string>).id ?? '')
+    // Skip the separator/continuation pseudo-notes (type set, no real content).
+    const type = (note as Record<string, string>).type
+    if (type === 'separator' || type === 'continuationSeparator') continue
+    map.set(id, await parseBlockContainer(note, ctx))
+  }
+  return map
 }

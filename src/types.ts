@@ -1,6 +1,14 @@
 export type DocxDocument = {
   blocks: Block[]
   pageSize?: { widthPx: number; heightPx: number; marginPx: { top: number; right: number; bottom: number; left: number } }
+  footnotes?: NoteEntry[]  // referenced footnotes, in document order (number 1..n)
+  endnotes?: NoteEntry[]   // referenced endnotes, in document order (number 1..n)
+}
+
+// A footnote/endnote's resolved content. number matches the in-text marker.
+export type NoteEntry = {
+  number: number
+  blocks: Block[]
 }
 
 export type Block = ParagraphBlock | TableBlock
@@ -19,6 +27,7 @@ export type TextRun = {
   text: string
   style: ComputedStyle
   href?: string  // set when the run is inside a w:hyperlink (external URL or #bookmark)
+  noteRef?: { type: 'footnote' | 'endnote'; number: number }  // a footnote/endnote marker
 }
 
 export type ImageRun = {
