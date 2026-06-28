@@ -131,13 +131,20 @@ function ensureLineBox(el: HTMLElement): void {
 }
 
 // CSS for a paragraph / list item: the document's w:spacing before/after as
-// margins, its line spacing, and the run-level style. Replaces the browser's
-// default 1em margins so the vertical rhythm matches the document.
-function paragraphCss(style: ComputedStyle): string {
+// margins, its line spacing, indentation, and the run-level style. Replaces the
+// browser's default 1em margins so the vertical rhythm matches the document.
+// For list items, indentation is handled by the list's padding (skipIndent).
+function paragraphCss(style: ComputedStyle, skipIndent = false): string {
   const mt = style.spaceBefore ?? 0
   const mb = style.spaceAfter ?? 0
   const lh = style.lineHeightPx != null ? `${style.lineHeightPx}px` : `${style.lineHeight ?? LINE_HEIGHT}`
   let css = `margin:${mt}px 0 ${mb}px;line-height:${lh}`
+  if (!skipIndent) {
+    if (style.indentLeft) css += `;padding-left:${style.indentLeft}px`
+    if (style.indentRight) css += `;padding-right:${style.indentRight}px`
+    if (style.indentFirstLine) css += `;text-indent:${style.indentFirstLine}px`
+    else if (style.indentHanging) css += `;text-indent:${-style.indentHanging}px`
+  }
   const inline = styleToCss(style)
   if (inline) css += ';' + inline
   return css
@@ -226,6 +233,11 @@ function renderBlocks(blocks: Block[], container: HTMLElement): void {
         if (ordered) (listEl as HTMLOListElement).start = start
         const styleType = LIST_STYLE[format]
         if (styleType) listEl.style.listStyleType = styleType
+        // Indent from the item's w:ind (the marker hangs in this padding);
+        // fall back to a modest default when the document doesn't specify one.
+        const indent = block.style.indentLeft ?? 24
+        listEl.style.margin = '0'
+        listEl.style.paddingLeft = `${indent}px`
         const parent = stack[stack.length - 1]
         if (parent) (parent.lastLi ?? parent.el).appendChild(listEl)
         stack.push({ el: listEl, numId, lastLi: null })
@@ -233,7 +245,7 @@ function renderBlocks(blocks: Block[], container: HTMLElement): void {
 
       const frame = stack[stack.length - 1]
       const li = document.createElement('li')
-      li.style.cssText = paragraphCss(block.style)
+      li.style.cssText = paragraphCss(block.style, true) // indent handled by the list padding
       for (const run of block.runs) renderRun(run, li)
       frame.el.appendChild(li)
       frame.lastLi = li

@@ -80,6 +80,11 @@ export type ComputedStyle = {
   spaceAfter?: number    // px, from w:spacing w:after (twips)
   lineHeight?: number    // unitless multiplier, from w:spacing w:line (auto rule)
   lineHeightPx?: number  // fixed px, from w:spacing w:line (atLeast/exact rule)
+  // Paragraph indentation (from w:ind), in px.
+  indentLeft?: number
+  indentRight?: number
+  indentFirstLine?: number  // positive: first-line indent
+  indentHanging?: number    // positive: hanging indent (first line out-dented)
 }
 
 export class DocxParseError extends Error {

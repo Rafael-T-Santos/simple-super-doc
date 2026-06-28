@@ -90,6 +90,17 @@ export function extractPPr(pPr: Record<string, unknown> | undefined): Partial<Co
     }
   }
 
+  // indentation (w:ind): left/right and first-line/hanging, all in twips
+  if ('ind' in pPr) {
+    const ind = pPr.ind as Record<string, string>
+    if (ind && typeof ind === 'object') {
+      if (ind.left != null) s.indentLeft = twipsToPx(ind.left)
+      if (ind.right != null) s.indentRight = twipsToPx(ind.right)
+      if (ind.hanging != null) s.indentHanging = twipsToPx(ind.hanging)
+      else if (ind.firstLine != null) s.indentFirstLine = twipsToPx(ind.firstLine)
+    }
+  }
+
   // paragraph spacing: before/after (twips) and line spacing (w:line + w:lineRule)
   if ('spacing' in pPr) {
     const sp = pPr.spacing as Record<string, string>
