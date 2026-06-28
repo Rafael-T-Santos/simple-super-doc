@@ -201,6 +201,7 @@ function findBlipEmbed(node: unknown): string | undefined {
 async function parseParagraph(
   p: Record<string, unknown>,
   ctx: ParseContext,
+  rawXml?: string,
 ): Promise<ParagraphBlock> {
   const pPr = p.pPr as Record<string, unknown> | undefined
   const pStyleId = getVal((pPr?.pStyle) as unknown)
@@ -218,24 +219,47 @@ async function parseParagraph(
     pageBreakBefore = !(val === '0' || val === 'false' || val === 'off')
   }
 
-  // Collect runs from: direct r[], w:ins child r[], w:hyperlink child r[].
-  // Hyperlink runs carry the resolved href so the renderer can wrap them in <a>.
+  // Collect runs from: direct r[], w:ins child r[], w:hyperlink child r[],
+  // interleaved in document order (recovered from rawXml) so a hyperlink or
+  // insertion in the middle of a paragraph isn't reordered to the end. Hyperlink
+  // runs carry the resolved href so the renderer can wrap them in <a>.
   type RunInput = { r: Record<string, unknown>; href?: string }
-  const inputs: RunInput[] = []
+  const directRuns = (p.r ?? []) as Record<string, unknown>[]
+  const insList = (p.ins ?? []) as Record<string, unknown>[]
+  const hyperlinks = (p.hyperlink ?? []) as Record<string, unknown>[]
 
-  for (const r of ((p.r ?? []) as Record<string, unknown>[])) inputs.push({ r })
-
-  for (const ins of ((p.ins ?? []) as Record<string, unknown>[])) {
+  const insInputs = (ins: Record<string, unknown>): RunInput[] => {
     const inner = ins.r
-    if (Array.isArray(inner)) for (const r of inner) inputs.push({ r })
-    else if (inner) inputs.push({ r: inner as Record<string, unknown> })
+    if (Array.isArray(inner)) return inner.map(r => ({ r }))
+    return inner ? [{ r: inner as Record<string, unknown> }] : []
   }
-
-  for (const hl of ((p.hyperlink ?? []) as Record<string, unknown>[])) {
+  const hlInputs = (hl: Record<string, unknown>): RunInput[] => {
     const href = resolveHyperlinkHref(hl, ctx)
     const inner = hl.r
-    if (Array.isArray(inner)) for (const r of inner) inputs.push({ r, href })
-    else if (inner) inputs.push({ r: inner as Record<string, unknown>, href })
+    if (Array.isArray(inner)) return inner.map(r => ({ r, href }))
+    return inner ? [{ r: inner as Record<string, unknown>, href }] : []
+  }
+
+  const order = rawXml ? getRunOrder(rawXml) : []
+  // Use the recovered order only if it accounts for every grouped child; else
+  // fall back to the safe (append-grouped) order.
+  const counts = { r: 0, hyperlink: 0, ins: 0 }
+  for (const t of order) counts[t]++
+  const orderOk = order.length > 0 &&
+    counts.r === directRuns.length && counts.hyperlink === hyperlinks.length && counts.ins === insList.length
+
+  const inputs: RunInput[] = []
+  if (orderOk) {
+    let ri = 0, hi = 0, ii = 0
+    for (const t of order) {
+      if (t === 'r') inputs.push({ r: directRuns[ri++] })
+      else if (t === 'hyperlink') inputs.push(...hlInputs(hyperlinks[hi++]))
+      else inputs.push(...insInputs(insList[ii++]))
+    }
+  } else {
+    for (const r of directRuns) inputs.push({ r })
+    for (const ins of insList) inputs.push(...insInputs(ins))
+    for (const hl of hyperlinks) inputs.push(...hlInputs(hl))
   }
 
   const runs: Run[] = []
@@ -309,6 +333,76 @@ async function parseTable(
   return { type: 'table', rows: irRows }
 }
 
+// Raw XML of each top-level (non-table-nested) paragraph, in document order.
+// Used to recover run order within a paragraph (see getRunOrder); aligns 1:1
+// with the parser's grouped body.p[] array.
+function extractParagraphChunks(xml: string): string[] {
+  const bodyStart = xml.indexOf('<w:body>')
+  const bodyEnd = xml.lastIndexOf('</w:body>')
+  if (bodyStart === -1 || bodyEnd === -1) return []
+  const body = xml.slice(bodyStart + 8, bodyEnd)
+
+  const chunks: string[] = []
+  const re = /<(\/?)w:(p|tbl)[\s>\/]/g
+  let tblDepth = 0
+  let pStart = -1
+  let m: RegExpExecArray | null
+  while ((m = re.exec(body)) !== null) {
+    const isClose = m[1] === '/'
+    const tag = m[2]
+    if (tag === 'tbl') {
+      if (isClose) tblDepth = Math.max(0, tblDepth - 1)
+      else tblDepth++
+      continue
+    }
+    if (tblDepth !== 0) continue // paragraph inside a table — not top-level
+    if (!isClose) {
+      const gt = body.indexOf('>', m.index)
+      if (gt > 0 && body[gt - 1] === '/') chunks.push(body.slice(m.index, gt + 1)) // <w:p/>
+      else if (pStart === -1) pStart = m.index
+    } else if (pStart !== -1) {
+      const gt = body.indexOf('>', m.index)
+      chunks.push(body.slice(pStart, gt + 1))
+      pStart = -1
+    }
+  }
+  return chunks
+}
+
+// Document order of a paragraph's content children (runs, hyperlinks, tracked
+// insertions). fast-xml-parser groups these by tag, so a hyperlink/insertion in
+// the MIDDLE of a paragraph would otherwise be reordered to the end.
+function getRunOrder(paraXml: string): Array<'r' | 'hyperlink' | 'ins'> {
+  let body = paraXml
+  const pprEnd = body.indexOf('</w:pPr>')
+  if (pprEnd !== -1) body = body.slice(pprEnd + 8) // skip paragraph properties
+
+  const order: Array<'r' | 'hyperlink' | 'ins'> = []
+  const re = /<(\/?)w:(r|hyperlink|ins)[\s>\/]/g
+  let depth = 0    // inside a hyperlink/ins wrapper
+  let inRun = false // inside a <w:r> (skip its rPr-change ins markers)
+  let m: RegExpExecArray | null
+  while ((m = re.exec(body)) !== null) {
+    const isClose = m[1] === '/'
+    const tag = m[2] as 'r' | 'hyperlink' | 'ins'
+    if (tag === 'r') {
+      if (isClose) inRun = false
+      else {
+        if (depth === 0) order.push('r')
+        inRun = true
+      }
+      continue
+    }
+    if (inRun) continue // an <w:ins> inside a run is an rPr change, not content
+    if (isClose) depth = Math.max(0, depth - 1)
+    else {
+      if (depth === 0) order.push(tag)
+      depth++
+    }
+  }
+  return order
+}
+
 // Scan raw body XML to determine document order of top-level p and tbl elements.
 // fast-xml-parser groups elements by tag name, losing cross-type ordering.
 function getBodyBlockOrder(xml: string): Array<'p' | 'tbl'> {
@@ -336,17 +430,21 @@ function getBodyBlockOrder(xml: string): Array<'p' | 'tbl'> {
 }
 
 // Parse all paragraph and table children of a container node (body, cell, etc.)
+// paraXmls (when provided, aligned 1:1 with container.p[]) lets paragraphs
+// recover their run order from raw XML.
 async function parseBlockContainer(
   container: Record<string, unknown>,
   ctx: ParseContext,
   order?: Array<'p' | 'tbl'>,
+  paraXmls?: string[],
 ): Promise<Block[]> {
   const ps = (container.p ?? []) as Record<string, unknown>[]
   const tbls = (container.tbl ?? []) as Record<string, unknown>[]
+  const xmls = paraXmls && paraXmls.length === ps.length ? paraXmls : undefined
 
   if (!order || order.length === 0) {
     const blocks: Block[] = []
-    for (const p of ps) blocks.push(await parseParagraph(p, ctx))
+    for (let i = 0; i < ps.length; i++) blocks.push(await parseParagraph(ps[i], ctx, xmls?.[i]))
     for (const tbl of tbls) blocks.push(await parseTable(tbl, ctx))
     return blocks
   }
@@ -355,7 +453,8 @@ async function parseBlockContainer(
   let pIdx = 0, tblIdx = 0
   for (const type of order) {
     if (type === 'p' && pIdx < ps.length) {
-      blocks.push(await parseParagraph(ps[pIdx++], ctx))
+      blocks.push(await parseParagraph(ps[pIdx], ctx, xmls?.[pIdx]))
+      pIdx++
     } else if (type === 'tbl' && tblIdx < tbls.length) {
       blocks.push(await parseTable(tbls[tblIdx++], ctx))
     }
@@ -368,7 +467,8 @@ export async function parseDocument(xml: string, ctx: ParseContext): Promise<Blo
   const body = (doc?.document as Record<string, unknown>)?.body as Record<string, unknown>
   if (!body) return []
   const order = getBodyBlockOrder(xml)
-  return parseBlockContainer(body, ctx, order)
+  const paraXmls = extractParagraphChunks(xml)
+  return parseBlockContainer(body, ctx, order, paraXmls)
 }
 
 // Parse footnotes.xml / endnotes.xml into a map of note id -> content blocks.
