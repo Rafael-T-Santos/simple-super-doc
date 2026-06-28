@@ -244,13 +244,8 @@ export function render(doc: DocxDocument, container: HTMLElement): void {
     b => b.type === 'paragraph' && extractPageBackground(b as ParagraphBlock) !== null,
   )
 
-  if (!hasPageBg) {
-    renderBlocks(doc.blocks, container)
-    renderNotes(doc, container)
-    return
-  }
-
   const ps = doc.pageSize
+  // Without a page size we can't lay out pages — fall back to continuous flow.
   if (!ps || ps.widthPx === 0 || ps.heightPx === 0) {
     renderBlocks(doc.blocks, container)
     renderNotes(doc, container)
@@ -263,21 +258,20 @@ export function render(doc: DocxDocument, container: HTMLElement): void {
   const contentW = pw - pm.left - pm.right
   const contentH = ph - pm.top - pm.bottom
 
-  // ── Pass 1: measure each block's rendered height in a hidden container ──────
-  // Background anchor blocks (isPageBackground) contribute no visible height but
-  // may contain text — that text is measured separately via withoutBgRuns().
+  // A page-level image (background/watermark) only flows out of the text for
+  // template documents (hasPageBg). Plain documents keep all their content.
+  const toFlow = (block: Block): Block | null =>
+    hasPageBg && block.type === 'paragraph' ? flowOnly(block as ParagraphBlock, pw, ph) : block
+
+  // ── Pass 1: measure each block's flow height in a hidden container ──────────
   const measureDiv = document.createElement('div')
   measureDiv.style.cssText =
     `position:fixed;top:-9999px;left:-9999px;visibility:hidden;pointer-events:none;width:${contentW}px;`
   document.body.appendChild(measureDiv)
 
-  // Measure each block's flow height. Page-level images (backgrounds and
-  // watermarks) are absolutely positioned and contribute no flow height.
   const blockHeight: number[] = new Array(doc.blocks.length).fill(0)
   for (let i = 0; i < doc.blocks.length; i++) {
-    const block = doc.blocks[i]
-    const toMeasure: Block | null =
-      block.type === 'paragraph' ? flowOnly(block as ParagraphBlock, pw, ph) : block
+    const toMeasure = toFlow(doc.blocks[i])
     if (!toMeasure) continue
     const el = document.createElement('div')
     renderBlocks([toMeasure], el)
@@ -288,22 +282,25 @@ export function render(doc: DocxDocument, container: HTMLElement): void {
 
   document.body.removeChild(measureDiv)
 
-  // Section starts: each section heading begins a new page. When a small icon
-  // immediately precedes a text heading, the break goes before the icon so the
-  // two stay together.
+  // Forced page breaks: w:pageBreakBefore always; section headings only for
+  // template documents (the heading heuristic is template-shaped — a plain doc
+  // shouldn't start a new page at every large-text heading).
   const n = doc.blocks.length
   const sectionStart: boolean[] = new Array(n).fill(false)
-  for (let i = 0; i < n; i++) {
-    let heading = isHeadingBlock(doc.blocks[i])
-    // Avoid a double break when an icon already opened this section.
-    if (heading && i > 0 && sectionStart[i - 1] && isIconOnly(doc.blocks[i - 1])) {
-      heading = false
+  if (hasPageBg) {
+    for (let i = 0; i < n; i++) {
+      let heading = isHeadingBlock(doc.blocks[i])
+      if (heading && i > 0 && sectionStart[i - 1] && isIconOnly(doc.blocks[i - 1])) {
+        heading = false
+      }
+      const iconLead = isIconOnly(doc.blocks[i]) && i + 1 < n && isHeadingBlock(doc.blocks[i + 1])
+      sectionStart[i] = heading || iconLead
     }
-    const iconLead = isIconOnly(doc.blocks[i]) && i + 1 < n && isHeadingBlock(doc.blocks[i + 1])
-    sectionStart[i] = heading || iconLead
   }
+  const forcesBreak = (i: number): boolean =>
+    sectionStart[i] || (doc.blocks[i].type === 'paragraph' && !!(doc.blocks[i] as ParagraphBlock).pageBreakBefore)
 
-  // Pagination: a new page starts at a section heading, or when a block does not
+  // Pagination: a new page starts at a forced break, or when a block does not
   // fit in the remaining space on the current page. A block taller than a full
   // page gets its own page (it will overflow, unavoidable without splitting it).
   const blockPage: number[] = new Array(n).fill(0)
@@ -311,8 +308,7 @@ export function render(doc: DocxDocument, container: HTMLElement): void {
   let usedOnPage = 0
   for (let i = 0; i < n; i++) {
     const h = blockHeight[i]
-    const forceBreak = sectionStart[i] && usedOnPage > 0
-    if (forceBreak || (usedOnPage > 0 && usedOnPage + h > contentH)) {
+    if ((forcesBreak(i) && usedOnPage > 0) || (usedOnPage > 0 && usedOnPage + h > contentH)) {
       page++
       usedOnPage = 0
     }
@@ -320,7 +316,7 @@ export function render(doc: DocxDocument, container: HTMLElement): void {
     usedOnPage += h
   }
 
-  const totalPages = page + 1
+  let totalPages = page + 1
 
   // ── Determine which page each background region covers ─────────────────────
   // Floating background anchors (behindDoc=1) use absolute page positioning, so
@@ -351,35 +347,63 @@ export function render(doc: DocxDocument, container: HTMLElement): void {
   const pageWatermarks: ImageRun[][] = Array.from({ length: totalPages }, () => [])
   for (let i = 0; i < doc.blocks.length; i++) {
     const block = doc.blocks[i]
-    const renderable: Block | null =
-      block.type === 'paragraph' ? flowOnly(block as ParagraphBlock, pw, ph) : block
+    const renderable = toFlow(block)
     if (renderable) pageBlocks[blockPage[i]].push(renderable)
-    for (const wm of watermarksOf(block, pw, ph)) pageWatermarks[blockPage[i]].push(wm)
+    if (hasPageBg) for (const wm of watermarksOf(block, pw, ph)) pageWatermarks[blockPage[i]].push(wm)
   }
+
+  // Footnotes/endnotes get their own final page so they appear at the end of the
+  // document inside a page box like everything else.
+  const notePage = document.createElement('div')
+  renderNotes(doc, notePage)
+  if (notePage.childNodes.length > 0) {
+    pageBlocks.push([])
+    pageWatermarks.push([])
+    pageBg.push(null)
+    totalPages++
+  }
+
+  // Shared page-box styling (white sheet on the host background).
+  const pageBoxCss = (extra: string[] = []): string => [
+    'position:relative',
+    'box-sizing:border-box',
+    'background-color:#fff',
+    'margin:0 auto 16px',
+    'box-shadow:0 2px 12px rgba(0,0,0,.25)',
+    `width:${pw}px`,
+    `min-height:${ph}px`,
+    ...extra,
+  ].join(';')
 
   // ── Pass 2: create page divs and render content ────────────────────────────
   const bgH = `${ph}px`
   for (let p = 0; p < totalPages; p++) {
     const blocks = pageBlocks[p]
+    const isNotePage = p === totalPages - 1 && notePage.childNodes.length > 0 && blocks.length === 0
 
     // Skip blank pages (only empty paragraphs) — trailing/standalone whitespace
-    // would otherwise produce an empty framed page.
-    if (!blocks.some(isBlockVisible)) continue
+    // would otherwise produce an empty page.
+    if (!isNotePage && !blocks.some(isBlockVisible)) continue
 
     const div = document.createElement('div')
     div.className = 'ssd-page'
 
+    // The notes page: render the prepared notes section into a white page box.
+    if (isNotePage) {
+      div.style.cssText = pageBoxCss([`padding:${pm.top}px ${pm.right}px ${pm.bottom}px ${pm.left}px`])
+      while (notePage.firstChild) div.appendChild(notePage.firstChild)
+      container.appendChild(div)
+      continue
+    }
+
     // A page that is just a full-bleed image (e.g. the closing slide) is drawn
-    // edge-to-edge with no margins and no underlying frame.
-    const fullImg = fullPageImage(blocks, pw)
+    // edge-to-edge with no margins and no underlying frame (template docs only).
+    const fullImg = hasPageBg ? fullPageImage(blocks, pw) : null
     if (fullImg) {
       div.style.cssText = [
-        'position:relative',
-        'box-sizing:border-box',
-        `width:${pw}px`,
-        `height:${ph}px`,
-        'margin:0 auto 16px',
-        'overflow:hidden',
+        'position:relative', 'box-sizing:border-box',
+        `width:${pw}px`, `height:${ph}px`,
+        'margin:0 auto 16px', 'overflow:hidden',
         'box-shadow:0 2px 12px rgba(0,0,0,.25)',
       ].join(';')
       const img = document.createElement('img')
@@ -391,20 +415,14 @@ export function render(doc: DocxDocument, container: HTMLElement): void {
     }
 
     const bgImg = pageBg[p]
-    const styles = [
-      'position:relative',
-      'box-sizing:border-box',
+    const extra = [
       'background-repeat:no-repeat',
       'background-position:top center',
       `background-size:100% ${bgH}`,
       `padding:${pm.top}px ${pm.right}px ${pm.bottom}px ${pm.left}px`,
-      'margin:0 auto 16px',
-      'box-shadow:0 2px 12px rgba(0,0,0,.25)',
-      `width:${pw}px`,
-      `min-height:${ph}px`,
     ]
-    if (bgImg) styles.push(`background-image:url('${bgImg.src}')`)
-    div.style.cssText = styles.join(';')
+    if (bgImg) extra.push(`background-image:url('${bgImg.src}')`)
+    div.style.cssText = pageBoxCss(extra)
 
     // Watermark overlays: absolutely positioned behind the text layer.
     for (const wm of pageWatermarks[p]) {
@@ -422,6 +440,4 @@ export function render(doc: DocxDocument, container: HTMLElement): void {
     div.appendChild(content)
     container.appendChild(div)
   }
-
-  renderNotes(doc, container)
 }

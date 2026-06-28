@@ -211,6 +211,13 @@ async function parseParagraph(
 
   const list = resolveListRef(pPr, ctx)
 
+  // w:pageBreakBefore forces a new page (unless explicitly disabled with val=0).
+  let pageBreakBefore = false
+  if (pPr && 'pageBreakBefore' in pPr) {
+    const val = getVal(pPr.pageBreakBefore)
+    pageBreakBefore = !(val === '0' || val === 'false' || val === 'off')
+  }
+
   // Collect runs from: direct r[], w:ins child r[], w:hyperlink child r[].
   // Hyperlink runs carry the resolved href so the renderer can wrap them in <a>.
   type RunInput = { r: Record<string, unknown>; href?: string }
@@ -237,7 +244,13 @@ async function parseParagraph(
     if (run !== null) runs.push(run)
   }
 
-  return { type: 'paragraph', style: paraStyle, runs, ...(list ? { list } : {}) }
+  return {
+    type: 'paragraph',
+    style: paraStyle,
+    runs,
+    ...(list ? { list } : {}),
+    ...(pageBreakBefore ? { pageBreakBefore: true } : {}),
+  }
 }
 
 async function parseTable(

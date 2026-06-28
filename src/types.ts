@@ -18,6 +18,7 @@ export type ParagraphBlock = {
   style: ComputedStyle
   runs: Run[]
   list?: ListRef
+  pageBreakBefore?: boolean  // w:pageBreakBefore — forces a new page in paginated render
 }
 
 export type Run = TextRun | ImageRun
