@@ -109,13 +109,21 @@
 
     #ir-panel.visible { display: block; }
 
+    /* Page viewport: a neutral backdrop so the white .ssd-page sheets stand out.
+       The library now paginates into .ssd-page boxes sized from the document. */
     #render-area {
-      background: #fff;
-      padding: 3rem 4rem;
+      background: #525659;
+      padding: 24px;
       overflow-y: auto;
-      line-height: 1.6;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
     }
 
+    #render-area:empty {
+      display: block;
+      background: #fff;
+    }
     #render-area:empty::before {
       content: 'Drop a .docx file to see it rendered here.';
       display: block;
@@ -125,13 +133,11 @@
       font-size: 1rem;
     }
 
-    /* Rendered document styles */
-    #render-area p { margin-bottom: 0.5em; }
-    #render-area table { border-collapse: collapse; margin: 1em 0; max-width: 100%; }
-    #render-area td, #render-area th { border: 1px solid #cbd5e1; padding: 0.4em 0.6em; vertical-align: top; }
-    #render-area ul, #render-area ol { padding-left: 1.5em; margin: 0.5em 0; }
-    #render-area li { margin-bottom: 0.25em; }
-    #render-area img { max-width: 100%; height: auto; }
+    /* Styles applied inside each rendered page sheet. */
+    .ssd-page { color: #111; }
+    .ssd-page table { border-collapse: collapse; }
+    .ssd-page td, .ssd-page th { border: 1px solid #cbd5e1; padding: 0.4em 0.6em; vertical-align: top; }
+    .ssd-page img { max-width: 100%; height: auto; }
   </style>
 </head>
 <body>
