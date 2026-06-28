@@ -330,7 +330,41 @@ async function parseTable(
     irRows.push({ cells: irCells })
   }
 
-  return { type: 'table', rows: irRows }
+  // Column widths from w:tblGrid (so columns match the document instead of being
+  // sized by content, which would change wrapping and how many rows fit a page).
+  const grid = tbl.tblGrid as Record<string, unknown> | undefined
+  const colsNode = grid?.gridCol
+  const colArr = Array.isArray(colsNode) ? colsNode : colsNode ? [colsNode] : []
+  const columnWidths = colArr.map(c => {
+    const w = (c as Record<string, string>).w
+    return w != null ? Math.round((parseFloat(w) * 96) / 1440) : 0
+  })
+
+  // Cell padding from w:tblCellMar (table default) or the first cell's w:tcMar.
+  const tblPr = tbl.tblPr as Record<string, unknown> | undefined
+  const firstTc = ((rows[0]?.tc ?? []) as Record<string, unknown>[])[0]
+  const firstTcPr = firstTc?.tcPr as Record<string, unknown> | undefined
+  const marNode = (tblPr?.tblCellMar ?? firstTcPr?.tcMar) as Record<string, unknown> | undefined
+  const cellPadding = marginToPx(marNode)
+
+  return {
+    type: 'table',
+    rows: irRows,
+    ...(columnWidths.some(w => w > 0) ? { columnWidths } : {}),
+    ...(cellPadding ? { cellPadding } : {}),
+  }
+}
+
+// Convert an OOXML margin node (top/right/bottom/left with w:w in twips) to px.
+function marginToPx(
+  node: Record<string, unknown> | undefined,
+): { top: number; right: number; bottom: number; left: number } | undefined {
+  if (!node) return undefined
+  const side = (s: unknown): number => {
+    const w = (s as Record<string, string> | undefined)?.w
+    return w != null ? Math.round((parseFloat(w) * 96) / 1440) : 0
+  }
+  return { top: side(node.top), right: side(node.right), bottom: side(node.bottom), left: side(node.left) }
 }
 
 // Raw XML of each top-level (non-table-nested) paragraph, in document order.

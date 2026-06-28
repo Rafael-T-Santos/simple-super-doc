@@ -90,6 +90,23 @@ export function extractPPr(pPr: Record<string, unknown> | undefined): Partial<Co
     }
   }
 
+  // paragraph borders (w:pBdr): top/bottom/left/right with sz (eighths of a pt),
+  // val (line style) and color.
+  if ('pBdr' in pPr) {
+    const bdr = pPr.pBdr as Record<string, unknown>
+    const sides = [['top', 'borderTop'], ['bottom', 'borderBottom'], ['left', 'borderLeft'], ['right', 'borderRight']] as const
+    for (const [side, key] of sides) {
+      const b = bdr[side] as Record<string, string> | undefined
+      if (!b || typeof b !== 'object') continue
+      const val = b.val
+      if (!val || val === 'nil' || val === 'none') continue
+      const px = Math.max(1, Math.round((b.sz ? parseFloat(b.sz) / 8 : 0.5) * 96 / 72))
+      const lineStyle = val === 'double' ? 'double' : val === 'dashed' ? 'dashed' : val === 'dotted' ? 'dotted' : 'solid'
+      const color = b.color && b.color !== 'auto' ? `#${b.color}` : '#000'
+      s[key] = `${px}px ${lineStyle} ${color}`
+    }
+  }
+
   // indentation (w:ind): left/right and first-line/hanging, all in twips
   if ('ind' in pPr) {
     const ind = pPr.ind as Record<string, string>

@@ -43,6 +43,8 @@ export type ImageRun = {
 export type TableBlock = {
   type: 'table'
   rows: TableRow[]
+  columnWidths?: number[]  // px per column, from w:tblGrid gridCol widths
+  cellPadding?: { top: number; right: number; bottom: number; left: number }  // px, from w:tblCellMar / w:tcMar
 }
 
 export type TableRow = {
@@ -85,6 +87,11 @@ export type ComputedStyle = {
   indentRight?: number
   indentFirstLine?: number  // positive: first-line indent
   indentHanging?: number    // positive: hanging indent (first line out-dented)
+  // Paragraph borders (from w:pBdr), as ready-to-use CSS border shorthands.
+  borderTop?: string
+  borderBottom?: string
+  borderLeft?: string
+  borderRight?: string
 }
 
 export class DocxParseError extends Error {

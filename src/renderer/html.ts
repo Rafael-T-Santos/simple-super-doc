@@ -130,13 +130,17 @@ function ensureLineBox(el: HTMLElement): void {
   }
 }
 
+// Set while rendering inside a table cell: the cell's padding provides the
+// spacing, so paragraph before/after margins are suppressed to keep rows compact.
+let inTableCell = false
+
 // CSS for a paragraph / list item: the document's w:spacing before/after as
 // margins, its line spacing, indentation, and the run-level style. Replaces the
 // browser's default 1em margins so the vertical rhythm matches the document.
 // For list items, indentation is handled by the list's padding (skipIndent).
 function paragraphCss(style: ComputedStyle, skipIndent = false): string {
-  const mt = style.spaceBefore ?? 0
-  const mb = style.spaceAfter ?? 0
+  const mt = inTableCell ? 0 : style.spaceBefore ?? 0
+  const mb = inTableCell ? 0 : style.spaceAfter ?? 0
   const lh = style.lineHeightPx != null ? `${style.lineHeightPx}px` : `${style.lineHeight ?? LINE_HEIGHT}`
   let css = `margin:${mt}px 0 ${mb}px;line-height:${lh}`
   if (!skipIndent) {
@@ -145,6 +149,10 @@ function paragraphCss(style: ComputedStyle, skipIndent = false): string {
     if (style.indentFirstLine) css += `;text-indent:${style.indentFirstLine}px`
     else if (style.indentHanging) css += `;text-indent:${-style.indentHanging}px`
   }
+  if (style.borderTop) css += `;border-top:${style.borderTop}`
+  if (style.borderBottom) css += `;border-bottom:${style.borderBottom}`
+  if (style.borderLeft) css += `;border-left:${style.borderLeft}`
+  if (style.borderRight) css += `;border-right:${style.borderRight}`
   const inline = styleToCss(style)
   if (inline) css += ';' + inline
   return css
@@ -164,11 +172,29 @@ function renderParagraph(block: ParagraphBlock): HTMLElement {
 function renderTable(block: TableBlock, container: HTMLElement): void {
   const table = document.createElement('table')
   table.style.borderCollapse = 'collapse'
-  // Cap tables at the container width so a wide table can't spill past the page
-  // frame, but DON'T force width:100% — that would stretch a small table to full
-  // width. Combined with per-cell word-break (below), an over-wide table shrinks
-  // by wrapping its content instead of overflowing.
   table.style.maxWidth = '100%'
+
+  // Apply the document's column widths (w:tblGrid) with a fixed layout so column
+  // proportions — and therefore text wrapping and row heights — match the
+  // document. Without this the browser sizes columns by content, narrowing some
+  // columns, wrapping text to more lines, and fitting fewer rows per page.
+  // Falls back to content-based sizing when the document gives no grid.
+  if (block.columnWidths && block.columnWidths.length > 0) {
+    const total = block.columnWidths.reduce((a, b) => a + b, 0)
+    if (total > 0) {
+      table.style.tableLayout = 'fixed'
+      table.style.width = '100%'
+      const colgroup = document.createElement('colgroup')
+      for (const w of block.columnWidths) {
+        const col = document.createElement('col')
+        col.style.width = `${((w / total) * 100).toFixed(3)}%`
+        colgroup.appendChild(col)
+      }
+      table.appendChild(colgroup)
+    }
+  }
+
+  const pad = block.cellPadding
   for (const row of block.rows) {
     const tr = document.createElement('tr')
     for (const cell of row.cells) {
@@ -176,10 +202,18 @@ function renderTable(block: TableBlock, container: HTMLElement): void {
       if (cell.colSpan > 1) td.colSpan = cell.colSpan
       if (cell.rowSpan > 1) td.rowSpan = cell.rowSpan
       if (cell.backgroundColor) td.style.backgroundColor = `#${cell.backgroundColor}`
+      // Cell padding from the document's w:tcMar (keeps rows as compact as Word).
+      if (pad) td.style.padding = `${pad.top}px ${pad.right}px ${pad.bottom}px ${pad.left}px`
+      td.style.verticalAlign = 'top'
       // Let long template tokens wrap instead of forcing overflow.
       td.style.overflowWrap = 'break-word'
       td.style.wordBreak = 'break-word'
+      // Cell padding already provides the spacing, so don't add the paragraph's
+      // before/after margins inside cells (Word keeps cell content tight).
+      const prev = inTableCell
+      inTableCell = true
       renderBlocks(cell.blocks, td)
+      inTableCell = prev
       tr.appendChild(td)
     }
     table.appendChild(tr)
