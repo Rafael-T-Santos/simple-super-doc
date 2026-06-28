@@ -263,6 +263,27 @@ function renderBlocks(blocks: Block[], container: HTMLElement): void {
   closeLists()
 }
 
+// Split a table's rows so the rows that fit within availH stay in the original
+// table; the overflow rows move into a new table (same element/styles) that is
+// returned. Returns null when nothing useful can be split off (no row fits the
+// remaining space, or every row already fits). The table must be laid out (in
+// the DOM) so row heights can be measured.
+function splitTableRows(table: HTMLTableElement, availH: number): HTMLTableElement | null {
+  const rows = Array.from(table.rows)
+  let used = 0
+  let splitAt = 0
+  for (let i = 0; i < rows.length; i++) {
+    const rh = rows[i].offsetHeight
+    if (used > 0 && used + rh > availH) break
+    used += rh
+    splitAt = i + 1
+  }
+  if (splitAt === 0 || splitAt >= rows.length) return null
+  const rest = table.cloneNode(false) as HTMLTableElement
+  for (let i = splitAt; i < rows.length; i++) rest.appendChild(rows[i])
+  return rest
+}
+
 type PageMargins = { top: number; right: number; bottom: number; left: number }
 
 // Page box styling shared by paginated renders (white sheet on the host bg).
@@ -317,13 +338,38 @@ function renderPlainPaginated(
   let pageDiv = newPage()
   let used = 0
   for (let i = 0; i < children.length; i++) {
+    const child = children[i]
+    const forced = child.dataset.ssdBreak === '1'
+
+    // Tables can split across pages: rows that fit stay, the rest continue on
+    // the next page (and split again if still too tall).
+    if (child.tagName === 'TABLE') {
+      if (forced && used > 0) { pageDiv = newPage(); used = 0 }
+      let table = child as HTMLTableElement
+      for (;;) {
+        pageDiv.appendChild(table)
+        const th = table.offsetHeight
+        if (used + th <= contentH) { used += th; break } // fits
+        const rest = splitTableRows(table, contentH - used)
+        if (!rest) {
+          if (used === 0) { used += th; break } // taller than a full page; accept overflow
+          pageDiv.removeChild(table)
+          pageDiv = newPage(); used = 0
+          continue // retry on a fresh page
+        }
+        // `table` now holds the rows that fit; `rest` continues on a new page.
+        pageDiv = newPage(); used = 0
+        table = rest
+      }
+      continue
+    }
+
     const h = heights[i]
-    const forced = children[i].dataset.ssdBreak === '1'
     if ((forced && used > 0) || (used > 0 && used + h > contentH)) {
       pageDiv = newPage()
       used = 0
     }
-    pageDiv.appendChild(children[i]) // moves the node out of the stage
+    pageDiv.appendChild(child) // moves the node out of the stage
     used += h
   }
   stage.remove()
