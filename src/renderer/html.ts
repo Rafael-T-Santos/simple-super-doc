@@ -321,6 +321,8 @@ function splitTableRows(table: HTMLTableElement, availH: number): HTMLTableEleme
 type PageMargins = { top: number; right: number; bottom: number; left: number }
 
 // Page box styling shared by paginated renders (white sheet on the host bg).
+// flex-shrink:0 keeps a flex host (e.g. a centered column viewport) from
+// collapsing a page that has no in-flow content (such as a full-bleed image).
 function pageBoxStyle(pw: number, ph: number, pm: PageMargins, extra: string[] = []): string {
   return [
     'position:relative',
@@ -328,6 +330,7 @@ function pageBoxStyle(pw: number, ph: number, pm: PageMargins, extra: string[] =
     'background-color:#fff',
     'margin:0 auto 16px',
     'box-shadow:0 2px 12px rgba(0,0,0,.25)',
+    'flex-shrink:0',
     `width:${pw}px`,
     `min-height:${ph}px`,
     `padding:${pm.top}px ${pm.right}px ${pm.bottom}px ${pm.left}px`,
@@ -595,13 +598,17 @@ export function render(doc: DocxDocument, container: HTMLElement): void {
     if (fullImg) {
       div.style.cssText = [
         'position:relative', 'box-sizing:border-box',
-        `width:${pw}px`, `height:${ph}px`,
+        `width:${pw}px`, `height:${ph}px`, `min-height:${ph}px`,
+        'flex-shrink:0',
         'margin:0 auto 16px', 'overflow:hidden',
         'box-shadow:0 2px 12px rgba(0,0,0,.25)',
       ].join(';')
       const img = document.createElement('img')
       img.src = fullImg.src
-      img.style.cssText = 'display:block;width:100%;height:100%;object-fit:cover'
+      // Absolute inset:0 fills the page box regardless of host img rules (a
+      // host `img { height: auto }` would otherwise collapse a height:100% img
+      // to 0 and the page would vanish).
+      img.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover'
       div.appendChild(img)
       container.appendChild(div)
       continue
