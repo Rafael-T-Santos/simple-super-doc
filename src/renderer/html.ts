@@ -76,13 +76,11 @@ function renderParagraph(block: ParagraphBlock): HTMLElement {
 function renderTable(block: TableBlock, container: HTMLElement): void {
   const table = document.createElement('table')
   table.style.borderCollapse = 'collapse'
-  // Keep tables inside the page content area; an over-wide table would spill
-  // past the page frame. fixed layout + width:100% pins the table to the content
-  // width regardless of cell content (long unbreakable {{tokens}} otherwise force
-  // the table wider than the page).
-  table.style.width = '100%'
+  // Cap tables at the container width so a wide table can't spill past the page
+  // frame, but DON'T force width:100% — that would stretch a small table to full
+  // width. Combined with per-cell word-break (below), an over-wide table shrinks
+  // by wrapping its content instead of overflowing.
   table.style.maxWidth = '100%'
-  table.style.tableLayout = 'fixed'
   for (const row of block.rows) {
     const tr = document.createElement('tr')
     for (const cell of row.cells) {
