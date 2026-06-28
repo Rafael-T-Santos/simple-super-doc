@@ -130,14 +130,22 @@ function ensureLineBox(el: HTMLElement): void {
   }
 }
 
+// CSS for a paragraph / list item: the document's w:spacing before/after as
+// margins, its line spacing, and the run-level style. Replaces the browser's
+// default 1em margins so the vertical rhythm matches the document.
+function paragraphCss(style: ComputedStyle): string {
+  const mt = style.spaceBefore ?? 0
+  const mb = style.spaceAfter ?? 0
+  const lh = style.lineHeightPx != null ? `${style.lineHeightPx}px` : `${style.lineHeight ?? LINE_HEIGHT}`
+  let css = `margin:${mt}px 0 ${mb}px;line-height:${lh}`
+  const inline = styleToCss(style)
+  if (inline) css += ';' + inline
+  return css
+}
+
 function renderParagraph(block: ParagraphBlock): HTMLElement {
   const p = document.createElement('p')
-  // Zero the browser's default 1em paragraph margins and pin line-height to
-  // Word's 1.15 so measured heights match Word's layout (this document's
-  // vertical rhythm comes from empty paragraphs, not from default margins).
-  p.style.cssText = `margin:0;line-height:${LINE_HEIGHT}`
-  const css = styleToCss(block.style)
-  if (css) p.style.cssText += ';' + css
+  p.style.cssText = paragraphCss(block.style)
   for (const run of block.runs) {
     renderRun(run, p)
   }
@@ -225,8 +233,7 @@ function renderBlocks(blocks: Block[], container: HTMLElement): void {
 
       const frame = stack[stack.length - 1]
       const li = document.createElement('li')
-      const css = styleToCss(block.style)
-      if (css) li.style.cssText = css
+      li.style.cssText = paragraphCss(block.style)
       for (const run of block.runs) renderRun(run, li)
       frame.el.appendChild(li)
       frame.lastLi = li

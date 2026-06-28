@@ -73,6 +73,8 @@ export function extractRPr(rPr: Record<string, unknown> | undefined): ComputedSt
   return s
 }
 
+const twipsToPx = (twips: string): number => Math.round((parseFloat(twips) * 96) / 1440)
+
 export function extractPPr(pPr: Record<string, unknown> | undefined): Partial<ComputedStyle> {
   if (!pPr) return {}
   const s: Partial<ComputedStyle> = {}
@@ -85,6 +87,22 @@ export function extractPPr(pPr: Record<string, unknown> | undefined): Partial<Co
       s.alignment = val
     } else {
       s.alignment = 'left'
+    }
+  }
+
+  // paragraph spacing: before/after (twips) and line spacing (w:line + w:lineRule)
+  if ('spacing' in pPr) {
+    const sp = pPr.spacing as Record<string, string>
+    if (sp && typeof sp === 'object') {
+      if (sp.before != null) s.spaceBefore = twipsToPx(sp.before)
+      if (sp.after != null) s.spaceAfter = twipsToPx(sp.after)
+      if (sp.line != null) {
+        if (sp.lineRule === 'atLeast' || sp.lineRule === 'exact') {
+          s.lineHeightPx = twipsToPx(sp.line) // line is in twips for these rules
+        } else {
+          s.lineHeight = parseFloat(sp.line) / 240 // "auto": line is in 240ths of a line
+        }
+      }
     }
   }
 

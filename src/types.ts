@@ -75,6 +75,11 @@ export type ComputedStyle = {
   color?: string         // hex e.g. "FF0000"; "auto" is filtered out at parse time
   alignment?: 'left' | 'center' | 'right' | 'justify'
   backgroundColor?: string  // hex from w:shd fill (e.g. "ff6109"), no # prefix
+  // Paragraph spacing (from w:spacing). Run-level styles ignore these.
+  spaceBefore?: number   // px, from w:spacing w:before (twips)
+  spaceAfter?: number    // px, from w:spacing w:after (twips)
+  lineHeight?: number    // unitless multiplier, from w:spacing w:line (auto rule)
+  lineHeightPx?: number  // fixed px, from w:spacing w:line (atLeast/exact rule)
 }
 
 export class DocxParseError extends Error {
