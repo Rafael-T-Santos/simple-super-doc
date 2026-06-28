@@ -32,6 +32,11 @@ jobs:
       - name: Build demo bundle
         run: npm run build:demo
 
+      # Cache-bust the bundle URL with the commit SHA so browsers never serve a
+      # stale index.global.js after a deploy.
+      - name: Version the demo bundle URL
+        run: sed -i "s|index.global.js|index.global.js?v=${GITHUB_SHA}|g" demo/index.html
+
       - uses: actions/configure-pages@v4
 
       - uses: actions/upload-pages-artifact@v3
