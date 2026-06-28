@@ -18,6 +18,7 @@ export type TextRun = {
   type: 'run'
   text: string
   style: ComputedStyle
+  href?: string  // set when the run is inside a w:hyperlink (external URL or #bookmark)
 }
 
 export type ImageRun = {
@@ -26,6 +27,7 @@ export type ImageRun = {
   widthPx: number    // converted from EMU: Math.round(cx / 9525)
   heightPx: number
   isPageBackground?: boolean  // true when wp:anchor behindDoc="1" (full-page background)
+  href?: string  // set when the image is inside a w:hyperlink
 }
 
 export type TableBlock = {

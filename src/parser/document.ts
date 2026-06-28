@@ -87,6 +87,7 @@ async function parseRun(
   r: Record<string, unknown>,
   paraStyle: ComputedStyle,
   ctx: ParseContext,
+  href?: string,
 ): Promise<Run | null> {
   const rPr = r.rPr as Record<string, unknown> | undefined
 
@@ -127,6 +128,7 @@ async function parseRun(
       widthPx: Math.round(cx / 9525),
       heightPx: Math.round(cy / 9525),
       ...(isPageBackground ? { isPageBackground: true } : {}),
+      ...(href ? { href } : {}),
     }
     return img
   }
@@ -143,8 +145,24 @@ async function parseRun(
     text = String(tNode)
   }
 
-  const textRun: TextRun = { type: 'run', text, style: runStyle }
+  const textRun: TextRun = { type: 'run', text, style: runStyle, ...(href ? { href } : {}) }
   return textRun
+}
+
+// Resolve a <w:hyperlink>'s destination: an external URL via r:id (relationships)
+// or an internal bookmark via w:anchor (rendered as a #fragment).
+function resolveHyperlinkHref(
+  hl: Record<string, unknown>,
+  ctx: ParseContext,
+): string | undefined {
+  const rId = hl.id
+  if (typeof rId === 'string') {
+    const rel = ctx.relationshipMap[rId]
+    if (rel?.target) return rel.target
+  }
+  const anchor = hl.anchor
+  if (typeof anchor === 'string' && anchor) return `#${anchor}`
+  return undefined
 }
 
 // Recursively search for a:blip embed attribute in a nested object
@@ -172,25 +190,29 @@ async function parseParagraph(
 
   const list = resolveListRef(pPr, ctx)
 
-  // Collect runs from: direct r[], w:ins child r[], w:hyperlink child r[]
-  const directRuns = (p.r ?? []) as Record<string, unknown>[]
-  const insRuns: Record<string, unknown>[] = []
+  // Collect runs from: direct r[], w:ins child r[], w:hyperlink child r[].
+  // Hyperlink runs carry the resolved href so the renderer can wrap them in <a>.
+  type RunInput = { r: Record<string, unknown>; href?: string }
+  const inputs: RunInput[] = []
+
+  for (const r of ((p.r ?? []) as Record<string, unknown>[])) inputs.push({ r })
+
   for (const ins of ((p.ins ?? []) as Record<string, unknown>[])) {
     const inner = ins.r
-    if (Array.isArray(inner)) insRuns.push(...inner)
-    else if (inner) insRuns.push(inner as Record<string, unknown>)
-  }
-  const hyperlinkRuns: Record<string, unknown>[] = []
-  for (const hl of ((p.hyperlink ?? []) as Record<string, unknown>[])) {
-    const inner = hl.r
-    if (Array.isArray(inner)) hyperlinkRuns.push(...inner)
-    else if (inner) hyperlinkRuns.push(inner as Record<string, unknown>)
+    if (Array.isArray(inner)) for (const r of inner) inputs.push({ r })
+    else if (inner) inputs.push({ r: inner as Record<string, unknown> })
   }
 
-  const allRuns = [...directRuns, ...insRuns, ...hyperlinkRuns]
+  for (const hl of ((p.hyperlink ?? []) as Record<string, unknown>[])) {
+    const href = resolveHyperlinkHref(hl, ctx)
+    const inner = hl.r
+    if (Array.isArray(inner)) for (const r of inner) inputs.push({ r, href })
+    else if (inner) inputs.push({ r: inner as Record<string, unknown>, href })
+  }
+
   const runs: Run[] = []
-  for (const r of allRuns) {
-    const run = await parseRun(r, paraStyle, ctx)
+  for (const { r, href } of inputs) {
+    const run = await parseRun(r, paraStyle, ctx, href)
     if (run !== null) runs.push(run)
   }
 

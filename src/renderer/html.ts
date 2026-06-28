@@ -19,6 +19,20 @@ function styleToCss(s: ComputedStyle): string {
 }
 
 function renderRun(run: Run, parent: HTMLElement): void {
+  // A run inside a hyperlink renders into an <a> wrapping the run's content.
+  const href = (run as TextRun | ImageRun).href
+  let target = parent
+  if (href) {
+    const a = document.createElement('a')
+    // SECURITY: href is from the document's relationships; only allow safe URL
+    // schemes (http/https/mailto/relative/#fragment), never javascript:.
+    a.setAttribute('href', sanitizeHref(href))
+    a.target = '_blank'
+    a.rel = 'noopener noreferrer'
+    parent.appendChild(a)
+    target = a
+  }
+
   if (run.type === 'image') {
     const img = document.createElement('img')
     img.src = (run as ImageRun).src
@@ -26,7 +40,7 @@ function renderRun(run: Run, parent: HTMLElement): void {
     img.height = (run as ImageRun).heightPx
     img.style.display = 'inline-block'
     img.style.maxWidth = '100%'
-    parent.appendChild(img)
+    target.appendChild(img)
     return
   }
 
@@ -38,10 +52,20 @@ function renderRun(run: Run, parent: HTMLElement): void {
     span.style.cssText = css
     // SECURITY: use textContent, never innerHTML
     span.textContent = textRun.text
-    parent.appendChild(span)
+    target.appendChild(span)
   } else {
-    parent.appendChild(document.createTextNode(textRun.text))
+    target.appendChild(document.createTextNode(textRun.text))
   }
+}
+
+// Only allow safe URL schemes; neutralize javascript:/data: and other unsafe
+// schemes to "#" so a malicious .docx can't inject a script URL.
+function sanitizeHref(href: string): string {
+  const trimmed = href.trim()
+  // Relative URLs and #fragments are safe.
+  if (/^(#|\/|\.|[^:]*$)/.test(trimmed)) return trimmed
+  if (/^(https?:|mailto:|tel:)/i.test(trimmed)) return trimmed
+  return '#'
 }
 
 // LINE_HEIGHT and EMPTY_LINE_EM live in ./layout (see their docs there).
