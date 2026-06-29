@@ -852,7 +852,26 @@ async function parseBlockContainer(
   return blocks
 }
 
+// Content controls (w:sdt) are transparent wrappers: their content should render
+// as if the wrapper were not there. fast-xml-parser groups <w:sdt> separately
+// from the surrounding <w:p>/<w:r>, so without unwrapping, sdt content (block or
+// inline, possibly nested) is dropped. Strip the wrapper tags from the raw XML
+// before parsing so the inner paragraphs/runs become normal in-place content —
+// for both the parsed tree and the raw-order scanners (getRunOrder etc.).
+// w:sdtPr / w:sdtEndPr hold control properties (not document text), so remove
+// them entirely; w:sdt / w:sdtContent are unwrapped (kept content, dropped tags).
+function stripSdtWrappers(xml: string): string {
+  return xml
+    .replace(/<w:sdtPr\b[^>]*\/>/g, '')
+    .replace(/<w:sdtPr\b[\s\S]*?<\/w:sdtPr>/g, '')
+    .replace(/<w:sdtEndPr\b[^>]*\/>/g, '')
+    .replace(/<w:sdtEndPr\b[\s\S]*?<\/w:sdtEndPr>/g, '')
+    .replace(/<\/?w:sdtContent\b[^>]*>/g, '')
+    .replace(/<\/?w:sdt\b[^>]*>/g, '')
+}
+
 export async function parseDocument(xml: string, ctx: ParseContext): Promise<Block[]> {
+  xml = stripSdtWrappers(xml)
   const doc = parser.parse(xml) as Record<string, unknown>
   const body = (doc?.document as Record<string, unknown>)?.body as Record<string, unknown>
   if (!body) return []
@@ -864,6 +883,7 @@ export async function parseDocument(xml: string, ctx: ParseContext): Promise<Blo
 
 // Parse a footer part (footerN.xml, root <w:ftr>) into content blocks.
 export async function parseFooterXml(xml: string, ctx: ParseContext): Promise<Block[]> {
+  xml = stripSdtWrappers(xml)
   const doc = parser.parse(xml) as Record<string, unknown>
   const ftr = doc?.ftr as Record<string, unknown> | undefined
   if (!ftr) return []
@@ -872,6 +892,7 @@ export async function parseFooterXml(xml: string, ctx: ParseContext): Promise<Bl
 
 // Parse a header part (headerN.xml, root <w:hdr>) into content blocks.
 export async function parseHeaderXml(xml: string, ctx: ParseContext): Promise<Block[]> {
+  xml = stripSdtWrappers(xml)
   const doc = parser.parse(xml) as Record<string, unknown>
   const hdr = doc?.hdr as Record<string, unknown> | undefined
   if (!hdr) return []
@@ -886,6 +907,7 @@ export async function parseNotesXml(
   ctx: ParseContext,
 ): Promise<Map<string, Block[]>> {
   const map = new Map<string, Block[]>()
+  xml = stripSdtWrappers(xml)
   const doc = parser.parse(xml) as Record<string, unknown>
   const root = doc?.[`${kind}s`] as Record<string, unknown> | undefined
   const notes = (root?.[kind] ?? []) as Record<string, unknown>[]
