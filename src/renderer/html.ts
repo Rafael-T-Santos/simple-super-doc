@@ -728,8 +728,8 @@ export function render(doc: DocxDocument, container: HTMLElement, options: Rende
         pageSize: sp,
         footnotes: doc.footnotes,
         endnotes: i === lastIdx ? doc.endnotes : undefined,
-        footer: doc.footer,
-        header: doc.header,
+        footer: section.footer ?? doc.footer,
+        header: section.header ?? doc.header,
       }
       const pageOffset = container.querySelectorAll('.ssd-page').length
       renderPlainPaginated(subDoc, container, sp.widthPx, sp.heightPx, sp.marginPx, pageOffset)

@@ -103,7 +103,12 @@ export async function parse(buffer: ArrayBuffer): Promise<DocxDocument> {
   const header = await resolveHeader(documentXml, relationshipMap, zip, ctx)
 
   const pageSize = parsePageSize(documentXml)
-  const sections = pageSize ? buildSections(blocks, pageSize) : []
+  // Resolve a header/footer relationship id to its parsed blocks (per-section).
+  const resolveRef = (rId: string | undefined, kind: 'header' | 'footer') =>
+    resolveRid(rId, relationshipMap, zip, ctx, kind === 'header' ? parseHeaderXml : parseFooterXml)
+  const sections = pageSize
+    ? await buildSections(blocks, pageSize, bodySectPrRefs(documentXml), resolveRef, header, footer)
+    : []
 
   return {
     blocks,
@@ -116,24 +121,72 @@ export async function parse(buffer: ArrayBuffer): Promise<DocxDocument> {
   }
 }
 
+type SectionRefs = { headerRId?: string; footerRId?: string }
+
 // Split the flat block list into sections at paragraphs tagged with a
 // sectionPageSize (a w:sectPr in their pPr). The trailing run of blocks forms
-// the final section, sized by the body-level sectPr (bodyPageSize). The tag is
-// transient and stripped here. Returns one section for a single-section doc.
-function buildSections(blocks: Block[], bodyPageSize: PageSize): Section[] {
-  const sections: Section[] = []
+// the final section, sized by the body-level sectPr (bodyPageSize, bodyRefs).
+// Each section's header/footer references are resolved to blocks, falling back
+// to the document-level default (docHeader/docFooter). Transient tags are
+// stripped here. Returns one section for a single-section doc.
+async function buildSections(
+  blocks: Block[],
+  bodyPageSize: PageSize,
+  bodyRefs: SectionRefs,
+  resolveRef: (rId: string | undefined, kind: 'header' | 'footer') => Promise<Block[] | undefined>,
+  docHeader: Block[] | undefined,
+  docFooter: Block[] | undefined,
+): Promise<Section[]> {
+  const raw: { blocks: Block[]; pageSize: PageSize; refs: SectionRefs }[] = []
   let cur: Block[] = []
   for (const b of blocks) {
     cur.push(b)
-    const tagged = b.type === 'paragraph' ? (b as ParagraphBlock).sectionPageSize : undefined
+    const pb = b.type === 'paragraph' ? (b as ParagraphBlock) : undefined
+    const tagged = pb?.sectionPageSize
     if (tagged) {
-      sections.push({ blocks: cur, pageSize: tagged })
-      delete (b as ParagraphBlock).sectionPageSize
+      raw.push({ blocks: cur, pageSize: tagged, refs: pb!.sectionRefs ?? {} })
+      delete pb!.sectionPageSize
+      delete pb!.sectionRefs
       cur = []
     }
   }
-  if (cur.length) sections.push({ blocks: cur, pageSize: bodyPageSize })
+  if (cur.length) raw.push({ blocks: cur, pageSize: bodyPageSize, refs: bodyRefs })
+
+  const sections: Section[] = []
+  for (const s of raw) {
+    const header = (await resolveRef(s.refs.headerRId, 'header')) ?? docHeader
+    const footer = (await resolveRef(s.refs.footerRId, 'footer')) ?? docFooter
+    sections.push({
+      blocks: s.blocks,
+      pageSize: s.pageSize,
+      ...(header && header.length ? { header } : {}),
+      ...(footer && footer.length ? { footer } : {}),
+    })
+  }
   return sections
+}
+
+// Default header/footer relationship ids from the body-level sectPr (the
+// textually last <w:sectPr>, which describes the final section).
+function bodySectPrRefs(documentXml: string): SectionRefs {
+  const lastSect = documentXml.lastIndexOf('<w:sectPr')
+  if (lastSect === -1) return {}
+  const end = documentXml.indexOf('</w:sectPr>', lastSect)
+  const scope = end !== -1 ? documentXml.slice(lastSect, end) : documentXml.slice(lastSect)
+  return {
+    ...(defaultRefRId(scope, 'header') ? { headerRId: defaultRefRId(scope, 'header') } : {}),
+    ...(defaultRefRId(scope, 'footer') ? { footerRId: defaultRefRId(scope, 'footer') } : {}),
+  }
+}
+
+// First default-type header/footer reference rId within an XML scope.
+function defaultRefRId(scope: string, kind: 'header' | 'footer'): string | undefined {
+  const re = new RegExp(`<w:${kind}Reference\\b[^>]*>`, 'g')
+  let m: RegExpExecArray | null
+  while ((m = re.exec(scope)) !== null) {
+    if (/w:type="default"/.test(m[0])) return /r:id="([^"]+)"/.exec(m[0])?.[1]
+  }
+  return undefined
 }
 
 async function resolveFooter(
@@ -173,6 +226,17 @@ async function resolvePart(
     rId = /r:id="([^"]+)"/.exec(tag)?.[1]
     break
   }
+  return resolveRid(rId, relationshipMap, zip, ctx, parseXml)
+}
+
+// Resolve a single header/footer relationship id to its parsed blocks.
+async function resolveRid(
+  rId: string | undefined,
+  relationshipMap: ReturnType<typeof parseRelationships>,
+  zip: JSZip,
+  ctx: ParseContext,
+  parseXml: (xml: string, ctx: ParseContext) => Promise<DocxDocument['blocks']>,
+): Promise<DocxDocument['blocks'] | undefined> {
   if (!rId || !relationshipMap[rId]) return undefined
   const xml = await readEntry(zip, `word/${relationshipMap[rId].target}`, false)
   return xml ? parseXml(xml, ctx) : undefined

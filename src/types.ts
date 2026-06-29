@@ -23,6 +23,8 @@ export type PageSize = NonNullable<DocxDocument['pageSize']>
 export type Section = {
   blocks: Block[]
   pageSize: PageSize
+  header?: Block[]  // this section's page header (its sectPr's w:headerReference); falls back to the doc default
+  footer?: Block[]  // this section's page footer (its sectPr's w:footerReference); falls back to the doc default
 }
 
 // A footnote/endnote's resolved content. number matches the in-text marker.
@@ -43,6 +45,9 @@ export type ParagraphBlock = {
   // to that section's page size. Consumed when building DocxDocument.sections;
   // stripped before the document is returned.
   sectionPageSize?: PageSize
+  // Transient: the default header/footer relationship ids from the same sectPr,
+  // resolved to blocks when building sections, then stripped.
+  sectionRefs?: { headerRId?: string; footerRId?: string }
 }
 
 export type Run = TextRun | ImageRun

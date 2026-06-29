@@ -84,3 +84,90 @@ describe('multiple sections (w:sectPr)', () => {
     expect(flat).toEqual(doc.blocks)
   })
 })
+
+// Builder that supports extra parts (headers/footers) and their relationships.
+async function buildDocxWith(
+  documentBody: string,
+  parts: Record<string, string>,
+  rels: string,
+): Promise<ArrayBuffer> {
+  const zip = new JSZip()
+  zip.file('[Content_Types].xml',
+    `<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
+    `<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>` +
+    `<Default Extension="xml" ContentType="application/xml"/>` +
+    `<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>` +
+    `<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>`)
+  zip.file('_rels/.rels',
+    `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+    `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`)
+  zip.file('word/styles.xml',
+    `<?xml version="1.0"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
+    `<w:docDefaults><w:rPrDefault><w:rPr/></w:rPrDefault></w:docDefaults></w:styles>`)
+  zip.file('word/_rels/document.xml.rels',
+    `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+    `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>` +
+    `${rels}</Relationships>`)
+  for (const [path, content] of Object.entries(parts)) zip.file(`word/${path}`, content)
+  zip.file('word/document.xml',
+    `<?xml version="1.0"?><w:document ` +
+    `xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ` +
+    `xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>${documentBody}</w:body></w:document>`)
+  return zip.generateAsync({ type: 'arraybuffer' })
+}
+
+const hdr = (text: string) =>
+  `<?xml version="1.0"?><w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ` +
+  `xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">` +
+  `<w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:hdr>`
+
+const textOf = (blocks: import('../src/types.js').Block[] | undefined): string =>
+  (blocks ?? []).map(b => b.type === 'paragraph'
+    ? b.runs.map(r => (r.type === 'run' ? r.text : '')).join('') : '').join('')
+
+describe('per-section headers/footers', () => {
+  const HREF = (rId: string) => `<w:headerReference w:type="default" r:id="${rId}"/>`
+
+  it('resolves a distinct header for each section', async () => {
+    const body =
+      `<w:p><w:r><w:t>section one body</w:t></w:r></w:p>` +
+      `<w:p><w:pPr><w:sectPr>${HREF('rId10')}${PORTRAIT}</w:sectPr></w:pPr></w:p>` +
+      `<w:p><w:r><w:t>section two body</w:t></w:r></w:p>` +
+      `<w:sectPr>${HREF('rId11')}${LANDSCAPE}</w:sectPr>`
+    const doc = await parse(await buildDocxWith(body,
+      { 'header1.xml': hdr('HEADER ONE'), 'header2.xml': hdr('HEADER TWO') },
+      `<Relationship Id="rId10" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>` +
+      `<Relationship Id="rId11" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header2.xml"/>`))
+    expect(doc.sections!.length).toBe(2)
+    expect(textOf(doc.sections![0].header)).toBe('HEADER ONE')
+    expect(textOf(doc.sections![1].header)).toBe('HEADER TWO')
+  })
+
+  it('falls back to the document-level default header when a section omits its own', async () => {
+    // Section 1 declares a header; the body (final) section declares none, so it
+    // inherits the doc-level default (which here is section 1's, the first ref).
+    const body =
+      `<w:p><w:r><w:t>one</w:t></w:r></w:p>` +
+      `<w:p><w:pPr><w:sectPr>${HREF('rId10')}${PORTRAIT}</w:sectPr></w:pPr></w:p>` +
+      `<w:p><w:r><w:t>two</w:t></w:r></w:p>` +
+      `<w:sectPr>${LANDSCAPE}</w:sectPr>`
+    const doc = await parse(await buildDocxWith(body,
+      { 'header1.xml': hdr('ONLY HEADER') },
+      `<Relationship Id="rId10" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>`))
+    expect(textOf(doc.sections![0].header)).toBe('ONLY HEADER')
+    expect(textOf(doc.sections![1].header)).toBe('ONLY HEADER')
+  })
+
+  it('strips the transient sectionRefs tag from the IR', async () => {
+    const body =
+      `<w:p><w:pPr><w:sectPr>${HREF('rId10')}${PORTRAIT}</w:sectPr></w:pPr></w:p>` +
+      `<w:p><w:r><w:t>two</w:t></w:r></w:p>` +
+      `<w:sectPr>${LANDSCAPE}</w:sectPr>`
+    const doc = await parse(await buildDocxWith(body,
+      { 'header1.xml': hdr('H') },
+      `<Relationship Id="rId10" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>`))
+    for (const b of doc.blocks) {
+      expect((b as ParagraphBlock).sectionRefs).toBeUndefined()
+    }
+  })
+})

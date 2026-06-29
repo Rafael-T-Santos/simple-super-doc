@@ -396,9 +396,33 @@ async function parseParagraph(
   // the document can be split into sections (see buildSections).
   const sectPr = pPr?.sectPr as Record<string, unknown> | undefined
   const sectionPageSize = pageSizeFromSectPr(sectPr)
-  if (sectionPageSize) blocks[blocks.length - 1].sectionPageSize = sectionPageSize
+  if (sectionPageSize) {
+    const last = blocks[blocks.length - 1]
+    last.sectionPageSize = sectionPageSize
+    const refs = refsFromSectPr(sectPr)
+    if (refs) last.sectionRefs = refs
+  }
 
   return blocks
+}
+
+// Extract the default header/footer relationship ids from a parsed sectPr.
+// w:headerReference / w:footerReference carry w:type (default/even/first) and
+// r:id; only the default type is used (matching the doc-level resolver). The
+// ids are resolved to blocks when building DocxDocument.sections.
+function refsFromSectPr(
+  sectPr: Record<string, unknown> | undefined,
+): { headerRId?: string; footerRId?: string } | undefined {
+  if (!sectPr) return undefined
+  const defaultRId = (node: unknown): string | undefined => {
+    const refs = (Array.isArray(node) ? node : node ? [node] : []) as Record<string, string>[]
+    const def = refs.find(r => r.type === 'default') ?? refs[0]
+    return def?.id
+  }
+  const headerRId = defaultRId(sectPr.headerReference)
+  const footerRId = defaultRId(sectPr.footerReference)
+  if (!headerRId && !footerRId) return undefined
+  return { ...(headerRId ? { headerRId } : {}), ...(footerRId ? { footerRId } : {}) }
 }
 
 async function parseTable(
