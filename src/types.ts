@@ -37,6 +37,7 @@ export type TextRun = {
   noteRef?: { type: 'footnote' | 'endnote'; number: number }  // a footnote/endnote marker
   pageNumber?: boolean  // a PAGE field — rendered as the current page number
   lineBreak?: boolean   // a w:br (soft line break) — rendered as <br> after the text
+  tabs?: number         // count of leading w:tab elements — rendered as spacers
 }
 
 export type ImageRun = {

@@ -74,6 +74,13 @@ function renderRun(run: Run, parent: HTMLElement): void {
     return
   }
 
+  // Leading tab spacers (no tab-stop math, just visible separation).
+  for (let t = 0; t < (textRun.tabs ?? 0); t++) {
+    const sp = document.createElement('span')
+    sp.style.cssText = 'display:inline-block;min-width:2.5em'
+    target.appendChild(sp)
+  }
+
   const css = styleToCss(textRun.style)
 
   if (textRun.text) {

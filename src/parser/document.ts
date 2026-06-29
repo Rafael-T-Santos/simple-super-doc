@@ -188,10 +188,15 @@ async function parseRun(
     text = String(tNode)
   }
 
+  // Leading tab(s) in the run (w:tab) — rendered as spacers.
+  const tabNode = r.tab
+  const tabs = Array.isArray(tabNode) ? tabNode.length : 'tab' in r ? 1 : 0
+
   const textRun: TextRun = {
     type: 'run', text, style: runStyle,
     ...(href ? { href } : {}),
     ...(lineBreak ? { lineBreak: true } : {}),
+    ...(tabs ? { tabs } : {}),
   }
   return textRun
 }
