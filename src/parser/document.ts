@@ -94,8 +94,19 @@ async function parseRun(
 ): Promise<Run | null> {
   const rPr = r.rPr as Record<string, unknown> | undefined
 
+  // A PAGE field becomes a page-number marker (resolved per page at render time).
+  if ('instrText' in r) {
+    const instr = (typeof r.instrText === 'object' && r.instrText !== null
+      ? String((r.instrText as Record<string, string>)['#text'] ?? '')
+      : String(r.instrText)).trim().toUpperCase()
+    if (instr === 'PAGE') {
+      return { type: 'run', text: '', style: Object.assign({}, paraStyle, extractRPr(rPr)), pageNumber: true }
+    }
+    return null // other field codes are skipped
+  }
+
   // Skip field characters, line breaks, and a note's own auto-number marker.
-  if ('fldChar' in r || 'instrText' in r || 'br' in r) return null
+  if ('fldChar' in r || 'br' in r) return null
   if ('footnoteRef' in r || 'endnoteRef' in r) return null
 
   // Character style at cascade level 2 for this specific run
@@ -503,6 +514,14 @@ export async function parseDocument(xml: string, ctx: ParseContext): Promise<Blo
   const order = getBodyBlockOrder(xml)
   const paraXmls = extractParagraphChunks(xml)
   return parseBlockContainer(body, ctx, order, paraXmls)
+}
+
+// Parse a footer part (footerN.xml, root <w:ftr>) into content blocks.
+export async function parseFooterXml(xml: string, ctx: ParseContext): Promise<Block[]> {
+  const doc = parser.parse(xml) as Record<string, unknown>
+  const ftr = doc?.ftr as Record<string, unknown> | undefined
+  if (!ftr) return []
+  return parseBlockContainer(ftr, ctx)
 }
 
 // Parse footnotes.xml / endnotes.xml into a map of note id -> content blocks.

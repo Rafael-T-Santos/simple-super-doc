@@ -1,8 +1,14 @@
 export type DocxDocument = {
   blocks: Block[]
-  pageSize?: { widthPx: number; heightPx: number; marginPx: { top: number; right: number; bottom: number; left: number } }
+  pageSize?: {
+    widthPx: number
+    heightPx: number
+    marginPx: { top: number; right: number; bottom: number; left: number }
+    footerPx?: number  // distance of the footer from the page bottom edge (w:footer)
+  }
   footnotes?: NoteEntry[]  // referenced footnotes, in document order (number 1..n)
   endnotes?: NoteEntry[]   // referenced endnotes, in document order (number 1..n)
+  footer?: Block[]         // default page footer (w:footerReference); PAGE fields become page numbers
 }
 
 // A footnote/endnote's resolved content. number matches the in-text marker.
@@ -29,6 +35,7 @@ export type TextRun = {
   style: ComputedStyle
   href?: string  // set when the run is inside a w:hyperlink (external URL or #bookmark)
   noteRef?: { type: 'footnote' | 'endnote'; number: number }  // a footnote/endnote marker
+  pageNumber?: boolean  // a PAGE field — rendered as the current page number
 }
 
 export type ImageRun = {

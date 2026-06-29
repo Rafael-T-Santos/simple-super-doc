@@ -46,6 +46,12 @@ function renderRun(run: Run, parent: HTMLElement): void {
 
   const textRun = run as TextRun
 
+  // PAGE field: render the current page number (set per page in renderFooter).
+  if (textRun.pageNumber) {
+    target.appendChild(document.createTextNode(String(currentPageNumber)))
+    return
+  }
+
   // Footnote/endnote marker: a superscript number linking to the notes section.
   if (textRun.noteRef) {
     const { type, number } = textRun.noteRef
@@ -133,6 +139,23 @@ function ensureLineBox(el: HTMLElement): void {
 // Set while rendering inside a table cell: the cell's padding provides the
 // spacing, so paragraph before/after margins are suppressed to keep rows compact.
 let inTableCell = false
+
+// The page number substituted for PAGE fields, set per page by renderFooter.
+let currentPageNumber = 0
+
+// Render the document's footer at the bottom of a page box, resolving PAGE
+// fields to the given page number.
+function renderFooter(doc: DocxDocument, pageDiv: HTMLElement, pageNum: number, pm: PageMargins, footerPx: number): void {
+  if (!doc.footer || doc.footer.length === 0) return
+  const prev = currentPageNumber
+  currentPageNumber = pageNum
+  const el = document.createElement('div')
+  el.className = 'ssd-footer'
+  el.style.cssText = `position:absolute;left:${pm.left}px;right:${pm.right}px;bottom:${footerPx}px`
+  renderBlocks(doc.footer, el)
+  pageDiv.appendChild(el)
+  currentPageNumber = prev
+}
 
 // CSS for a paragraph / list item: the document's w:spacing before/after as
 // margins, its line spacing, indentation, and the run-level style. Replaces the
@@ -364,11 +387,13 @@ function renderPlainPaginated(
   const stageH = stage.scrollHeight
   const heights = children.map((_, i) => (i + 1 < children.length ? tops[i + 1] : stageH) - tops[i])
 
+  const pages: HTMLElement[] = []
   const newPage = (): HTMLElement => {
     const div = document.createElement('div')
     div.className = 'ssd-page'
     div.style.cssText = pageBoxStyle(pw, ph, pm)
     container.appendChild(div)
+    pages.push(div)
     return div
   }
 
@@ -418,6 +443,10 @@ function renderPlainPaginated(
     const div = newPage()
     while (noteHost.firstChild) div.appendChild(noteHost.firstChild)
   }
+
+  // Page footer (with page numbers) on every page.
+  const footerPx = doc.pageSize?.footerPx ?? Math.round(pm.bottom / 2)
+  pages.forEach((page, i) => renderFooter(doc, page, i + 1, pm, footerPx))
 }
 
 export function render(doc: DocxDocument, container: HTMLElement): void {
