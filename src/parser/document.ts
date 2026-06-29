@@ -109,14 +109,17 @@ async function parseRun(
   if ('fldChar' in r) return null
   if ('footnoteRef' in r || 'endnoteRef' in r) return null
 
-  // w:br: a soft line break becomes a <br>; a page break has no place in the
-  // continuous flow model, so it's dropped (paragraph-level pageBreakBefore is
-  // handled separately).
+  // w:br: a soft line break becomes a <br>; an explicit page break becomes a
+  // transient pageBreak marker (parseParagraph splits the paragraph there onto a
+  // new page). A column break has no place in the single-column flow — dropped.
   let lineBreak = false
   if ('br' in r) {
     const br = r.br as Record<string, string> | string | undefined
     const brType = typeof br === 'object' && br !== null ? br.type : undefined
-    if (brType === 'page' || brType === 'column') return null
+    if (brType === 'page') {
+      return { type: 'run', text: '', style: Object.assign({}, paraStyle, extractRPr(rPr)), pageBreak: true }
+    }
+    if (brType === 'column') return null
     lineBreak = true
   }
 
@@ -233,7 +236,7 @@ async function parseParagraph(
   p: Record<string, unknown>,
   ctx: ParseContext,
   rawXml?: string,
-): Promise<ParagraphBlock> {
+): Promise<ParagraphBlock[]> {
   const pPr = p.pPr as Record<string, unknown> | undefined
   const pStyleId = getVal((pPr?.pStyle) as unknown)
 
@@ -299,20 +302,32 @@ async function parseParagraph(
     if (run !== null) runs.push(run)
   }
 
-  // For an empty paragraph the paragraph-mark run properties (pPr > rPr) set the
-  // line's font/metrics; for a paragraph with text they apply only to the mark
-  // glyph and must NOT bold/resize the runs, so we fold them into the block
-  // style only when there is no visible run.
-  const hasVisible = runs.some(r => r.type === 'image' || (r as TextRun).text.trim().length > 0)
-  const blockStyle = hasVisible ? paraStyle : Object.assign({}, paraStyle, extractMarkRPr(pPr))
-
-  return {
-    type: 'paragraph',
-    style: blockStyle,
-    runs,
-    ...(list ? { list } : {}),
-    ...(pageBreakBefore ? { pageBreakBefore: true } : {}),
+  // An explicit page break (w:br w:type="page") splits the paragraph into
+  // segments: the run sequence is divided at each pageBreak marker (the marker
+  // itself is dropped), and every segment after the first forces a new page.
+  const segments: Run[][] = [[]]
+  for (const run of runs) {
+    if (run.type === 'run' && (run as TextRun).pageBreak) segments.push([])
+    else segments[segments.length - 1].push(run)
   }
+
+  const makeBlock = (segRuns: Run[], forceBreak: boolean): ParagraphBlock => {
+    // For an empty paragraph the paragraph-mark run properties (pPr > rPr) set the
+    // line's font/metrics; for a paragraph with text they apply only to the mark
+    // glyph and must NOT bold/resize the runs, so we fold them into the block
+    // style only when there is no visible run.
+    const hasVisible = segRuns.some(r => r.type === 'image' || (r as TextRun).text.trim().length > 0)
+    const blockStyle = hasVisible ? paraStyle : Object.assign({}, paraStyle, extractMarkRPr(pPr))
+    return {
+      type: 'paragraph',
+      style: blockStyle,
+      runs: segRuns,
+      ...(list ? { list } : {}),
+      ...(forceBreak ? { pageBreakBefore: true } : {}),
+    }
+  }
+
+  return segments.map((seg, i) => makeBlock(seg, i === 0 ? pageBreakBefore : true))
 }
 
 async function parseTable(
@@ -509,7 +524,7 @@ async function parseBlockContainer(
 
   if (!order || order.length === 0) {
     const blocks: Block[] = []
-    for (let i = 0; i < ps.length; i++) blocks.push(await parseParagraph(ps[i], ctx, xmls?.[i]))
+    for (let i = 0; i < ps.length; i++) blocks.push(...await parseParagraph(ps[i], ctx, xmls?.[i]))
     for (const tbl of tbls) blocks.push(await parseTable(tbl, ctx))
     return blocks
   }
@@ -518,7 +533,7 @@ async function parseBlockContainer(
   let pIdx = 0, tblIdx = 0
   for (const type of order) {
     if (type === 'p' && pIdx < ps.length) {
-      blocks.push(await parseParagraph(ps[pIdx], ctx, xmls?.[pIdx]))
+      blocks.push(...await parseParagraph(ps[pIdx], ctx, xmls?.[pIdx]))
       pIdx++
     } else if (type === 'tbl' && tblIdx < tbls.length) {
       blocks.push(await parseTable(tbls[tblIdx++], ctx))
