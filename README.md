@@ -61,7 +61,9 @@ non-docx or malformed input.
   `showRevisions` render option.
 - **Multiple sections** — per-section page size and orientation (e.g. a
   landscape table page between portrait pages), per-section headers/footers,
-  with continuous page numbering.
+  with continuous page numbering. Each section is routed to the plain or
+  full-page-background path by its own content, so template documents may mix
+  page sizes across sections.
 
 ## Page-aware rendering
 
@@ -112,9 +114,6 @@ following are intentionally out of scope:
   line. For a byte-faithful page image, convert the `.docx` to PDF.
 - **Comments** — review comments are parsed away (treated as noise); only
   tracked-change insertions/deletions are surfaced (via `showRevisions`).
-
-Smaller gaps: multi-section documents that also use full-page background
-templates fall back to a single section.
 
 ## Development
 
