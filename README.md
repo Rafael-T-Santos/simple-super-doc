@@ -106,8 +106,10 @@ This is a faithful but *simple* HTML renderer, not a Word layout engine. The
 following are intentionally out of scope:
 
 - **Floating layout** — text wrapping around floating images, multi-column
-  layouts, text boxes, shapes, charts, and SmartArt are not laid out. (Inline
-  images and tables are supported.)
+  layouts, shapes, charts, and SmartArt are not laid out. (Inline images and
+  tables are supported.) Text inside a text box (`w:txbxContent`, DrawingML or
+  VML) is recovered into the flow so it is never lost, but the box is not
+  floated or positioned.
 - **Pixel-exact pagination** — without Word's line-breaking and layout engine,
   page breaks are reconstructed by two-pass DOM measurement and heuristics.
   Pagination is close but not guaranteed to match Word/LibreOffice line for

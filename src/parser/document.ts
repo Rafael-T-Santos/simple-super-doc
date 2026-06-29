@@ -231,7 +231,7 @@ async function parseParagraph(
   p: Record<string, unknown>,
   ctx: ParseContext,
   rawXml?: string,
-): Promise<ParagraphBlock[]> {
+): Promise<Block[]> {
   const pPr = p.pPr as Record<string, unknown> | undefined
   const pStyleId = getVal((pPr?.pStyle) as unknown)
 
@@ -403,7 +403,50 @@ async function parseParagraph(
     if (refs) last.sectionRefs = refs
   }
 
+  // Text boxes (w:txbxContent inside a w:drawing / w:pict shape) carry block
+  // content the run path can't represent. Recover it into the flow right after
+  // this paragraph so the text is never silently dropped. (Floating placement
+  // is out of scope — see README; this is minimum-viable text recovery.)
+  const textBoxes = await extractTextBoxes(p, ctx)
+  return textBoxes.length ? [...blocks, ...textBoxes] : blocks
+}
+
+// Parse every text box reachable from a paragraph into flow blocks. Word emits
+// a text box twice inside mc:AlternateContent (DrawingML Choice + VML Fallback),
+// so only one branch is followed to avoid duplicating the content.
+async function extractTextBoxes(p: Record<string, unknown>, ctx: ParseContext): Promise<Block[]> {
+  const contents: Record<string, unknown>[] = []
+  collectTxbxContent(p, contents)
+  const blocks: Block[] = []
+  for (const tc of contents) blocks.push(...await parseBlockContainer(tc, ctx))
   return blocks
+}
+
+// Collect all w:txbxContent nodes in a parsed subtree. On AlternateContent,
+// descend only into the Choice (DrawingML) and ignore the Fallback (VML) so the
+// same text box isn't collected twice. A found txbxContent is not recursed into
+// here — any text box nested inside it is recovered when its own paragraphs are
+// parsed (parseParagraph -> extractTextBoxes again).
+function collectTxbxContent(node: unknown, acc: Record<string, unknown>[]): void {
+  if (!node || typeof node !== 'object') return
+  if (Array.isArray(node)) {
+    for (const item of node) collectTxbxContent(item, acc)
+    return
+  }
+  for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+    if (key === 'txbxContent') {
+      for (const tc of (Array.isArray(value) ? value : [value])) {
+        if (tc && typeof tc === 'object') acc.push(tc as Record<string, unknown>)
+      }
+    } else if (key === 'AlternateContent') {
+      for (const ac of (Array.isArray(value) ? value : [value])) {
+        const a = ac as Record<string, unknown>
+        collectTxbxContent(a.Choice ?? a.Fallback, acc)
+      }
+    } else {
+      collectTxbxContent(value, acc)
+    }
+  }
 }
 
 // Extract the default header/footer relationship ids from a parsed sectPr.
