@@ -46,8 +46,8 @@ non-docx or malformed input.
   tracked changes keep their real sequence — in the body **and inside cells**).
 - **Images** — inline and anchored, as base64 data URLs.
 - **Headers & footers** — default `headerReference`/`footerReference`, rendered
-  in the page margins on every page; distinct per section when sections declare
-  their own.
+  in the page margins on every page; distinct per section, with a section that
+  declares none inheriting the previous section's (OOXML semantics).
 - **Page breaks** — `w:pageBreakBefore` and explicit `<w:br w:type="page"/>`.
 - **Tab stops** — right/center/decimal stops with dot/hyphen/underscore leaders
   (table-of-contents rows render as `Title …… 12`).
@@ -113,10 +113,8 @@ following are intentionally out of scope:
 - **Comments** — review comments are parsed away (treated as noise); only
   tracked-change insertions/deletions are surfaced (via `showRevisions`).
 
-Smaller gaps: a section that omits its own header/footer inherits the
-document-level default rather than the previous section's; and multi-section
-documents that also use full-page background templates fall back to a single
-section.
+Smaller gaps: multi-section documents that also use full-page background
+templates fall back to a single section.
 
 ## Development
 
