@@ -107,6 +107,15 @@ export type ComputedStyle = {
   borderBottom?: string
   borderLeft?: string
   borderRight?: string
+  // Tab stops (from w:tabs), sorted by position. Drives tab rendering — most
+  // importantly right-aligned stops with dot leaders (tables of contents).
+  tabStops?: TabStop[]
+}
+
+export type TabStop = {
+  posPx: number  // position from the paragraph's left edge, px (w:pos twips → px)
+  val: 'left' | 'right' | 'center' | 'decimal' | 'bar'
+  leader: 'none' | 'dot' | 'hyphen' | 'underscore'
 }
 
 export class DocxParseError extends Error {

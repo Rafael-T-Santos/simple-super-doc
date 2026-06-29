@@ -1,5 +1,5 @@
 import { XMLParser } from 'fast-xml-parser'
-import type { ComputedStyle } from '../types.js'
+import type { ComputedStyle, TabStop } from '../types.js'
 
 export type StyleMap = Record<string, ComputedStyle>
 
@@ -145,6 +145,25 @@ export function extractPPr(pPr: Record<string, unknown> | undefined): Partial<Co
       if (ind.hanging != null) s.indentHanging = twipsToPx(ind.hanging)
       else if (ind.firstLine != null) s.indentFirstLine = twipsToPx(ind.firstLine)
     }
+  }
+
+  // tab stops (w:tabs > w:tab): position (twips), alignment (w:val) and leader.
+  // A "clear" stop removes a stop and carries no position — skip it.
+  if ('tabs' in pPr) {
+    const tabsNode = (pPr.tabs as Record<string, unknown> | undefined)?.tab
+    const arr = (Array.isArray(tabsNode) ? tabsNode : tabsNode ? [tabsNode] : []) as Record<string, string>[]
+    const stops: TabStop[] = []
+    for (const t of arr) {
+      if (!t || typeof t !== 'object' || t.val === 'clear' || t.pos == null) continue
+      const v = t.val
+      const val: TabStop['val'] =
+        v === 'right' || v === 'center' || v === 'decimal' || v === 'bar' ? v : 'left'
+      const ld = t.leader
+      const leader: TabStop['leader'] =
+        ld === 'dot' || ld === 'middleDot' ? 'dot' : ld === 'hyphen' ? 'hyphen' : ld === 'underscore' ? 'underscore' : 'none'
+      stops.push({ posPx: twipsToPx(t.pos), val, leader })
+    }
+    if (stops.length) s.tabStops = stops.sort((a, b) => a.posPx - b.posPx)
   }
 
   // paragraph spacing: before/after (twips) and line spacing (w:line + w:lineRule)

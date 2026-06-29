@@ -1,4 +1,4 @@
-import type { DocxDocument, Block, ParagraphBlock, TableBlock, TextRun, ImageRun, Run, ComputedStyle, NoteEntry } from '../types.js'
+import type { DocxDocument, Block, ParagraphBlock, TableBlock, TextRun, ImageRun, Run, ComputedStyle, NoteEntry, TabStop } from '../types.js'
 import {
   EMPTY_LINE_EM, LINE_HEIGHT,
   extractPageBackground, isBlockVisible, isHeadingBlock, isIconOnly,
@@ -26,7 +26,7 @@ function styleToCss(s: ComputedStyle): string {
   return parts.join(';')
 }
 
-function renderRun(run: Run, parent: HTMLElement): void {
+function renderRun(run: Run, parent: HTMLElement, skipLeadingTabs = false): void {
   // A run inside a hyperlink renders into an <a> wrapping the run's content.
   const href = (run as TextRun | ImageRun).href
   let target = parent
@@ -74,8 +74,9 @@ function renderRun(run: Run, parent: HTMLElement): void {
     return
   }
 
-  // Leading tab spacers (no tab-stop math, just visible separation).
-  for (let t = 0; t < (textRun.tabs ?? 0); t++) {
+  // Leading tab spacers (no tab-stop math, just visible separation). Skipped
+  // when a tab-stop layout has already consumed the leading tabs as separators.
+  for (let t = 0; !skipLeadingTabs && t < (textRun.tabs ?? 0); t++) {
     const sp = document.createElement('span')
     sp.style.cssText = 'display:inline-block;min-width:2.5em'
     target.appendChild(sp)
@@ -267,12 +268,79 @@ function paragraphCss(style: ComputedStyle, skipIndent = false): string {
 function renderParagraph(block: ParagraphBlock): HTMLElement {
   const p = document.createElement('p')
   p.style.cssText = paragraphCss(block.style)
-  for (const run of block.runs) {
-    renderRun(run, p)
+
+  // A right/center/decimal tab stop with leading tabs (a table-of-contents row:
+  // "Title.....12") is laid out with a flex leader instead of a blank spacer.
+  const stops = block.style.tabStops
+  const hasTabRun = block.runs.some(r => r.type === 'run' && ((r as TextRun).tabs ?? 0) > 0)
+  const alignStop = stops?.some(s => s.val === 'right' || s.val === 'center' || s.val === 'decimal')
+  if (hasTabRun && stops && alignStop) {
+    renderTabbedParagraph(block, p, stops)
+  } else {
+    for (const run of block.runs) renderRun(run, p)
   }
+
   ensureLineBox(p)
   if (block.pageBreakBefore) p.dataset.ssdBreak = '1'
   return p
+}
+
+// Lay out a paragraph whose tabs align to explicit tab stops. The run sequence is
+// split at each leading tab into segments; between segments a "leader" fills the
+// gap (flex-grow for right/center/decimal stops, a fixed spacer for left stops),
+// with optional dot/hyphen/underscore leader styling. This produces the dotted
+// right-aligned page numbers of a table of contents.
+function renderTabbedParagraph(block: ParagraphBlock, p: HTMLElement, stops: TabStop[]): void {
+  p.style.display = 'flex'
+  p.style.alignItems = 'baseline'
+  p.style.width = '100%'
+
+  const segments: HTMLElement[] = []
+  const seps: TabStop[] = []
+  let stopIdx = 0
+  let current = document.createElement('span')
+  current.style.cssText = 'flex:0 1 auto;min-width:0'
+  segments.push(current)
+
+  for (const run of block.runs) {
+    let leadTabs = run.type === 'run' ? ((run as TextRun).tabs ?? 0) : 0
+    while (leadTabs-- > 0) {
+      seps.push(stops[Math.min(stopIdx, stops.length - 1)])
+      stopIdx++
+      current = document.createElement('span')
+      current.style.cssText = 'flex:0 1 auto;min-width:0'
+      segments.push(current)
+    }
+    renderRun(run, current, /* skipLeadingTabs */ true)
+  }
+
+  // The last segment (e.g. the page number) should never wrap or shrink.
+  const last = segments[segments.length - 1]
+  if (segments.length > 1) last.style.cssText = 'flex:0 0 auto;white-space:nowrap'
+
+  p.appendChild(segments[0])
+  for (let i = 1; i < segments.length; i++) {
+    p.appendChild(makeLeader(seps[i - 1]))
+    p.appendChild(segments[i])
+  }
+}
+
+// The filler between two tab-stop segments. Right/center/decimal stops grow to
+// push the next segment toward the stop; left/bar stops use a fixed spacer.
+function makeLeader(stop: TabStop): HTMLElement {
+  const el = document.createElement('span')
+  const grows = stop.val === 'right' || stop.val === 'center' || stop.val === 'decimal'
+  const border =
+    stop.leader === 'dot' ? 'border-bottom:2px dotted currentColor'
+    : stop.leader === 'hyphen' ? 'border-bottom:1px dashed currentColor'
+    : stop.leader === 'underscore' ? 'border-bottom:1px solid currentColor'
+    : ''
+  if (grows) {
+    el.style.cssText = `flex:1 1 0;margin:0 4px;align-self:flex-end;transform:translateY(-0.35em);${border}`
+  } else {
+    el.style.cssText = 'display:inline-block;flex:0 0 auto;min-width:2.5em'
+  }
+  return el
 }
 
 function renderTable(block: TableBlock, container: HTMLElement): void {
