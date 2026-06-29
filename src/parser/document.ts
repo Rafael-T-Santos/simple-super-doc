@@ -22,7 +22,8 @@ const parser = new XMLParser({
   trimValues: false,
   isArray: (name) =>
     ['p', 'r', 'tbl', 'tr', 'tc', 'style', 'abstractNum', 'num', 'lvl', 'lvlOverride',
-     'hyperlink', 'bookmarkStart', 'ins', 'del', 'fldSimple', 'footnote', 'endnote'].includes(name),
+     'hyperlink', 'bookmarkStart', 'ins', 'del', 'moveTo', 'moveFrom', 'fldSimple',
+     'footnote', 'endnote'].includes(name),
 })
 
 export type ParseContext = {
@@ -260,19 +261,23 @@ async function parseParagraph(
   const directRuns = (p.r ?? []) as Record<string, unknown>[]
   const insList = (p.ins ?? []) as Record<string, unknown>[]
   const delList = (p.del ?? []) as Record<string, unknown>[]
+  // Tracked MOVES: w:moveTo is the text at its NEW location (kept in the final
+  // view, like an insertion); w:moveFrom is the same text at its OLD location
+  // (removed in the final view, like a deletion). Treating them as ins/del keeps
+  // the moved text exactly once and supports showRevisions, instead of dropping
+  // both copies (the runs live inside moveTo/moveFrom, not directly in the para).
+  const moveToList = (p.moveTo ?? []) as Record<string, unknown>[]
+  const moveFromList = (p.moveFrom ?? []) as Record<string, unknown>[]
   const hyperlinks = (p.hyperlink ?? []) as Record<string, unknown>[]
   const fldSimpleList = (p.fldSimple ?? []) as Record<string, unknown>[]
 
-  const insInputs = (ins: Record<string, unknown>): RunInput[] => {
-    const inner = ins.r
-    if (Array.isArray(inner)) return inner.map(r => ({ r, inserted: true }))
-    return inner ? [{ r: inner as Record<string, unknown>, inserted: true }] : []
+  const runChildInputs = (node: Record<string, unknown>, flag: 'inserted' | 'deleted'): RunInput[] => {
+    const inner = node.r
+    const arr = Array.isArray(inner) ? inner : inner ? [inner] : []
+    return (arr as Record<string, unknown>[]).map(r => ({ r, [flag]: true }))
   }
-  const delInputs = (del: Record<string, unknown>): RunInput[] => {
-    const inner = del.r
-    if (Array.isArray(inner)) return inner.map(r => ({ r, deleted: true }))
-    return inner ? [{ r: inner as Record<string, unknown>, deleted: true }] : []
-  }
+  const insInputs = (ins: Record<string, unknown>): RunInput[] => runChildInputs(ins, 'inserted')
+  const delInputs = (del: Record<string, unknown>): RunInput[] => runChildInputs(del, 'deleted')
   const hlInputs = (hl: Record<string, unknown>): RunInput[] => {
     const href = resolveHyperlinkHref(hl, ctx)
     const inner = hl.r
@@ -283,27 +288,32 @@ async function parseParagraph(
   const order = rawXml ? getRunOrder(rawXml) : []
   // Use the recovered order only if it accounts for every grouped child; else
   // fall back to the safe (append-grouped) order.
-  const counts = { r: 0, hyperlink: 0, ins: 0, del: 0, fldSimple: 0 }
+  const counts = { r: 0, hyperlink: 0, ins: 0, del: 0, moveTo: 0, moveFrom: 0, fldSimple: 0 }
   for (const t of order) counts[t]++
   const orderOk = order.length > 0 &&
     counts.r === directRuns.length && counts.hyperlink === hyperlinks.length &&
     counts.ins === insList.length && counts.del === delList.length &&
+    counts.moveTo === moveToList.length && counts.moveFrom === moveFromList.length &&
     counts.fldSimple === fldSimpleList.length
 
   const inputs: RunInput[] = []
   if (orderOk) {
-    let ri = 0, hi = 0, ii = 0, di = 0, fi = 0
+    let ri = 0, hi = 0, ii = 0, di = 0, mti = 0, mfi = 0, fi = 0
     for (const t of order) {
       if (t === 'r') inputs.push({ r: directRuns[ri++] })
       else if (t === 'hyperlink') inputs.push(...hlInputs(hyperlinks[hi++]))
       else if (t === 'ins') inputs.push(...insInputs(insList[ii++]))
       else if (t === 'del') inputs.push(...delInputs(delList[di++]))
+      else if (t === 'moveTo') inputs.push(...runChildInputs(moveToList[mti++], 'inserted'))
+      else if (t === 'moveFrom') inputs.push(...runChildInputs(moveFromList[mfi++], 'deleted'))
       else inputs.push({ fldSimple: fldSimpleList[fi++] })
     }
   } else {
     for (const r of directRuns) inputs.push({ r })
     for (const ins of insList) inputs.push(...insInputs(ins))
     for (const del of delList) inputs.push(...delInputs(del))
+    for (const mt of moveToList) inputs.push(...runChildInputs(mt, 'inserted'))
+    for (const mf of moveFromList) inputs.push(...runChildInputs(mf, 'deleted'))
     for (const hl of hyperlinks) inputs.push(...hlInputs(hl))
     for (const fs of fldSimpleList) inputs.push({ fldSimple: fs })
   }
@@ -758,19 +768,23 @@ function extractRowCellInners(tableXml: string): string[][] {
 // insertions and deletions). fast-xml-parser groups these by tag, so a
 // hyperlink/insertion/deletion in the MIDDLE of a paragraph would otherwise be
 // reordered to the end.
-function getRunOrder(paraXml: string): Array<'r' | 'hyperlink' | 'ins' | 'del' | 'fldSimple'> {
+type RunOrderTag = 'r' | 'hyperlink' | 'ins' | 'del' | 'moveTo' | 'moveFrom' | 'fldSimple'
+function getRunOrder(paraXml: string): RunOrderTag[] {
   let body = paraXml
   const pprEnd = body.indexOf('</w:pPr>')
   if (pprEnd !== -1) body = body.slice(pprEnd + 8) // skip paragraph properties
 
-  const order: Array<'r' | 'hyperlink' | 'ins' | 'del' | 'fldSimple'> = []
-  const re = /<(\/?)w:(r|hyperlink|ins|del|fldSimple)[\s>\/]/g
-  let depth = 0    // inside a hyperlink/ins/del/fldSimple wrapper
+  const order: RunOrderTag[] = []
+  // moveTo/moveFrom are tracked-move wrappers (like ins/del). The trailing
+  // [\s>\/] excludes their range markers (moveToRangeStart/End etc.), which carry
+  // no runs.
+  const re = /<(\/?)w:(r|hyperlink|ins|del|moveTo|moveFrom|fldSimple)[\s>\/]/g
+  let depth = 0    // inside a hyperlink/ins/del/moveTo/moveFrom/fldSimple wrapper
   let inRun = false // inside a <w:r> (skip its rPr-change ins/del markers)
   let m: RegExpExecArray | null
   while ((m = re.exec(body)) !== null) {
     const isClose = m[1] === '/'
-    const tag = m[2] as 'r' | 'hyperlink' | 'ins' | 'del' | 'fldSimple'
+    const tag = m[2] as RunOrderTag
     if (tag === 'r') {
       if (isClose) inRun = false
       else {
@@ -852,26 +866,36 @@ async function parseBlockContainer(
   return blocks
 }
 
-// Content controls (w:sdt) are transparent wrappers: their content should render
-// as if the wrapper were not there. fast-xml-parser groups <w:sdt> separately
-// from the surrounding <w:p>/<w:r>, so without unwrapping, sdt content (block or
-// inline, possibly nested) is dropped. Strip the wrapper tags from the raw XML
-// before parsing so the inner paragraphs/runs become normal in-place content —
-// for both the parsed tree and the raw-order scanners (getRunOrder etc.).
-// w:sdtPr / w:sdtEndPr hold control properties (not document text), so remove
-// them entirely; w:sdt / w:sdtContent are unwrapped (kept content, dropped tags).
-function stripSdtWrappers(xml: string): string {
+// Several OOXML elements are TRANSPARENT WRAPPERS: their content should render as
+// if the wrapper were not there. fast-xml-parser groups them apart from the
+// surrounding <w:p>/<w:r>, so without unwrapping their content (block or inline,
+// possibly nested) is dropped:
+//   - w:sdt        content controls / structured document tags (forms, templates)
+//   - w:smartTag   auto-recognized entities (dates, names) — legacy Word
+//   - w:customXml  custom-XML data-binding wrappers
+// Strip the wrapper tags from the raw XML before parsing so the inner content
+// becomes normal in-place content — for both the parsed tree AND the raw-order
+// scanners (getRunOrder etc.). The *Pr property elements (sdtPr/sdtEndPr/
+// smartTagPr/customXmlPr) hold control metadata, not document text, so remove
+// them entirely; the wrappers themselves are unwrapped (content kept, tags dropped).
+function stripTransparentWrappers(xml: string): string {
   return xml
     .replace(/<w:sdtPr\b[^>]*\/>/g, '')
     .replace(/<w:sdtPr\b[\s\S]*?<\/w:sdtPr>/g, '')
     .replace(/<w:sdtEndPr\b[^>]*\/>/g, '')
     .replace(/<w:sdtEndPr\b[\s\S]*?<\/w:sdtEndPr>/g, '')
+    .replace(/<w:smartTagPr\b[^>]*\/>/g, '')
+    .replace(/<w:smartTagPr\b[\s\S]*?<\/w:smartTagPr>/g, '')
+    .replace(/<w:customXmlPr\b[^>]*\/>/g, '')
+    .replace(/<w:customXmlPr\b[\s\S]*?<\/w:customXmlPr>/g, '')
     .replace(/<\/?w:sdtContent\b[^>]*>/g, '')
     .replace(/<\/?w:sdt\b[^>]*>/g, '')
+    .replace(/<\/?w:smartTag\b[^>]*>/g, '')
+    .replace(/<\/?w:customXml\b[^>]*>/g, '')
 }
 
 export async function parseDocument(xml: string, ctx: ParseContext): Promise<Block[]> {
-  xml = stripSdtWrappers(xml)
+  xml = stripTransparentWrappers(xml)
   const doc = parser.parse(xml) as Record<string, unknown>
   const body = (doc?.document as Record<string, unknown>)?.body as Record<string, unknown>
   if (!body) return []
@@ -883,7 +907,7 @@ export async function parseDocument(xml: string, ctx: ParseContext): Promise<Blo
 
 // Parse a footer part (footerN.xml, root <w:ftr>) into content blocks.
 export async function parseFooterXml(xml: string, ctx: ParseContext): Promise<Block[]> {
-  xml = stripSdtWrappers(xml)
+  xml = stripTransparentWrappers(xml)
   const doc = parser.parse(xml) as Record<string, unknown>
   const ftr = doc?.ftr as Record<string, unknown> | undefined
   if (!ftr) return []
@@ -892,7 +916,7 @@ export async function parseFooterXml(xml: string, ctx: ParseContext): Promise<Bl
 
 // Parse a header part (headerN.xml, root <w:hdr>) into content blocks.
 export async function parseHeaderXml(xml: string, ctx: ParseContext): Promise<Block[]> {
-  xml = stripSdtWrappers(xml)
+  xml = stripTransparentWrappers(xml)
   const doc = parser.parse(xml) as Record<string, unknown>
   const hdr = doc?.hdr as Record<string, unknown> | undefined
   if (!hdr) return []
@@ -907,7 +931,7 @@ export async function parseNotesXml(
   ctx: ParseContext,
 ): Promise<Map<string, Block[]>> {
   const map = new Map<string, Block[]>()
-  xml = stripSdtWrappers(xml)
+  xml = stripTransparentWrappers(xml)
   const doc = parser.parse(xml) as Record<string, unknown>
   const root = doc?.[`${kind}s`] as Record<string, unknown> | undefined
   const notes = (root?.[kind] ?? []) as Record<string, unknown>[]

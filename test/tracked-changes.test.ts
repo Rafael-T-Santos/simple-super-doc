@@ -32,6 +32,10 @@ const ins = (text: string) =>
   `<w:ins w:id="1" w:author="a" w:date="2026-01-01T00:00:00Z"><w:r><w:t xml:space="preserve">${text}</w:t></w:r></w:ins>`
 const del = (text: string) =>
   `<w:del w:id="2" w:author="a" w:date="2026-01-01T00:00:00Z"><w:r><w:delText xml:space="preserve">${text}</w:delText></w:r></w:del>`
+const moveTo = (text: string) =>
+  `<w:moveTo w:id="3" w:author="a" w:date="2026-01-01T00:00:00Z"><w:r><w:t xml:space="preserve">${text}</w:t></w:r></w:moveTo>`
+const moveFrom = (text: string) =>
+  `<w:moveFrom w:id="4" w:author="a" w:date="2026-01-01T00:00:00Z"><w:r><w:t xml:space="preserve">${text}</w:t></w:r></w:moveFrom>`
 
 const texts = (p: ParagraphBlock): string[] => p.runs.map(r => (r as TextRun).text)
 
@@ -62,5 +66,32 @@ describe('tracked changes (parse)', () => {
     expect(texts(p)).toEqual(['1', '2', '3', '4'])
     expect((p.runs[1] as TextRun).deleted).toBe(true)
     expect((p.runs[2] as TextRun).inserted).toBe(true)
+  })
+
+  it('treats a tracked move-to as an insertion (kept) and move-from as a deletion (removed)', async () => {
+    // The moved text lives at the new location (moveTo) and the old one
+    // (moveFrom). The final view keeps it once at moveTo; moveFrom is removed.
+    const body =
+      `<w:p><w:r><w:t xml:space="preserve">A </w:t></w:r>${moveTo('moved')}` +
+      `<w:r><w:t xml:space="preserve"> B </w:t></w:r>${moveFrom('moved')}</w:p>`
+    const doc = await parse(await buildDocx(body))
+    const p = doc.blocks[0] as ParagraphBlock
+    const mt = p.runs.find(r => (r as TextRun).text === 'moved' && (r as TextRun).inserted) as TextRun
+    const mf = p.runs.find(r => (r as TextRun).text === 'moved' && (r as TextRun).deleted) as TextRun
+    expect(mt?.inserted).toBe(true)
+    expect(mf?.deleted).toBe(true)
+    // default (accepted) render keeps move-to, drops move-from → "A moved B "
+    const kept = p.runs.filter(r => !(r as TextRun).deleted).map(r => (r as TextRun).text).join('')
+    expect(kept).toBe('A moved B ')
+  })
+
+  it('keeps move runs interleaved in document order', async () => {
+    const body =
+      `<w:p><w:r><w:t>1</w:t></w:r>${moveFrom('2')}${moveTo('3')}<w:r><w:t>4</w:t></w:r></w:p>`
+    const doc = await parse(await buildDocx(body))
+    const p = doc.blocks[0] as ParagraphBlock
+    expect(texts(p)).toEqual(['1', '2', '3', '4'])
+    expect((p.runs[1] as TextRun).deleted).toBe(true)   // moveFrom
+    expect((p.runs[2] as TextRun).inserted).toBe(true)  // moveTo
   })
 })

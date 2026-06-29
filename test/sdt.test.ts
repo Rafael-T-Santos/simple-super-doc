@@ -83,6 +83,25 @@ describe('content controls (w:sdt)', () => {
     expect(text).not.toContain('company')
   })
 
+  it('recovers text wrapped in a w:smartTag (transparent wrapper)', async () => {
+    const body =
+      `<w:p><w:r><w:t xml:space="preserve">On </w:t></w:r>` +
+      `<w:smartTag w:uri="urn:schemas" w:element="date"><w:smartTagPr/>` +
+      `<w:r><w:t>January 1</w:t></w:r></w:smartTag>` +
+      `<w:r><w:t xml:space="preserve"> we met</w:t></w:r></w:p>`
+    const doc = await parse(await buildDocx(body))
+    const p = doc.blocks[0] as ParagraphBlock
+    expect(p.runs.map(r => (r as TextRun).text).join('')).toBe('On January 1 we met')
+  })
+
+  it('recovers text wrapped in a w:customXml element', async () => {
+    const body =
+      `<w:p><w:customXml w:uri="u" w:element="e"><w:customXmlPr/>` +
+      `<w:r><w:t>Bound value</w:t></w:r></w:customXml></w:p>`
+    const doc = await parse(await buildDocx(body))
+    expect(allText(doc.blocks)).toContain('Bound value')
+  })
+
   it('recovers an sdt that wraps a table', async () => {
     const body =
       `<w:sdt><w:sdtPr><w:id w:val="5"/></w:sdtPr><w:sdtContent>` +
