@@ -112,6 +112,9 @@ following are intentionally out of scope:
   tables are supported.) Text inside a text box (`w:txbxContent`, DrawingML or
   VML) is recovered into the flow so it is never lost, but the box is not
   floated or positioned.
+- **2D math layout** — OMML equations (`m:oMath`) are recovered as their linear
+  text (e.g. `A=πr2`), inline and in order, so the content is never lost, but
+  fractions, superscripts and radicals are not laid out two-dimensionally.
 - **Pixel-exact pagination** — without Word's line-breaking and layout engine,
   page breaks are reconstructed by two-pass DOM measurement and heuristics.
   Pagination is close but not guaranteed to match Word/LibreOffice line for

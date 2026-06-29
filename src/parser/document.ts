@@ -878,6 +878,25 @@ async function parseBlockContainer(
 // scanners (getRunOrder etc.). The *Pr property elements (sdtPr/sdtEndPr/
 // smartTagPr/customXmlPr) hold control metadata, not document text, so remove
 // them entirely; the wrappers themselves are unwrapped (content kept, tags dropped).
+// OMML math (m:oMath) stores its text in <m:t> elements, not <w:t>, so the run
+// parser drops equations entirely. There is no 2D math layout here (a non-goal),
+// but the content must not be lost: replace each <m:oMath> with a normal run
+// carrying its concatenated math text, in place and in document order, so an
+// equation like the area formula renders as its linear text ("A=πr2"). Display
+// equations sit inside <m:oMathPara>, which is unwrapped so the run lands in the
+// paragraph. The extracted text keeps its source XML-entity encoding.
+function inlineOmmlText(xml: string): string {
+  xml = xml.replace(/<m:oMath\b[\s\S]*?<\/m:oMath>/g, (frag) => {
+    const text = (frag.match(/<m:t\b[^>]*>([\s\S]*?)<\/m:t>/g) || [])
+      .map(t => t.replace(/<[^>]+>/g, '')).join('')
+    return text ? `<w:r><w:t xml:space="preserve">${text}</w:t></w:r>` : ''
+  })
+  return xml
+    .replace(/<m:oMathParaPr\b[^>]*\/>/g, '')
+    .replace(/<m:oMathParaPr\b[\s\S]*?<\/m:oMathParaPr>/g, '')
+    .replace(/<\/?m:oMathPara\b[^>]*>/g, '')
+}
+
 function stripTransparentWrappers(xml: string): string {
   return xml
     .replace(/<w:sdtPr\b[^>]*\/>/g, '')
@@ -895,7 +914,7 @@ function stripTransparentWrappers(xml: string): string {
 }
 
 export async function parseDocument(xml: string, ctx: ParseContext): Promise<Block[]> {
-  xml = stripTransparentWrappers(xml)
+  xml = stripTransparentWrappers(inlineOmmlText(xml))
   const doc = parser.parse(xml) as Record<string, unknown>
   const body = (doc?.document as Record<string, unknown>)?.body as Record<string, unknown>
   if (!body) return []
@@ -907,7 +926,7 @@ export async function parseDocument(xml: string, ctx: ParseContext): Promise<Blo
 
 // Parse a footer part (footerN.xml, root <w:ftr>) into content blocks.
 export async function parseFooterXml(xml: string, ctx: ParseContext): Promise<Block[]> {
-  xml = stripTransparentWrappers(xml)
+  xml = stripTransparentWrappers(inlineOmmlText(xml))
   const doc = parser.parse(xml) as Record<string, unknown>
   const ftr = doc?.ftr as Record<string, unknown> | undefined
   if (!ftr) return []
@@ -916,7 +935,7 @@ export async function parseFooterXml(xml: string, ctx: ParseContext): Promise<Bl
 
 // Parse a header part (headerN.xml, root <w:hdr>) into content blocks.
 export async function parseHeaderXml(xml: string, ctx: ParseContext): Promise<Block[]> {
-  xml = stripTransparentWrappers(xml)
+  xml = stripTransparentWrappers(inlineOmmlText(xml))
   const doc = parser.parse(xml) as Record<string, unknown>
   const hdr = doc?.hdr as Record<string, unknown> | undefined
   if (!hdr) return []
@@ -931,7 +950,7 @@ export async function parseNotesXml(
   ctx: ParseContext,
 ): Promise<Map<string, Block[]>> {
   const map = new Map<string, Block[]>()
-  xml = stripTransparentWrappers(xml)
+  xml = stripTransparentWrappers(inlineOmmlText(xml))
   const doc = parser.parse(xml) as Record<string, unknown>
   const root = doc?.[`${kind}s`] as Record<string, unknown> | undefined
   const notes = (root?.[kind] ?? []) as Record<string, unknown>[]
