@@ -23,8 +23,8 @@ export type PageSize = NonNullable<DocxDocument['pageSize']>
 export type Section = {
   blocks: Block[]
   pageSize: PageSize
-  header?: Block[]  // this section's page header (its sectPr's w:headerReference); falls back to the doc default
-  footer?: Block[]  // this section's page footer (its sectPr's w:footerReference); falls back to the doc default
+  header?: Block[]  // this section's page header (its sectPr's w:headerReference); inherits the previous section's when it declares none
+  footer?: Block[]  // this section's page footer (its sectPr's w:footerReference); inherits the previous section's when it declares none
 }
 
 // A footnote/endnote's resolved content. number matches the in-text marker.

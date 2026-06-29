@@ -126,9 +126,11 @@ type SectionRefs = { headerRId?: string; footerRId?: string }
 // Split the flat block list into sections at paragraphs tagged with a
 // sectionPageSize (a w:sectPr in their pPr). The trailing run of blocks forms
 // the final section, sized by the body-level sectPr (bodyPageSize, bodyRefs).
-// Each section's header/footer references are resolved to blocks, falling back
-// to the document-level default (docHeader/docFooter). Transient tags are
-// stripped here. Returns one section for a single-section doc.
+// Each section's header/footer references are resolved to blocks. A section
+// that does not declare its own reference inherits the PREVIOUS section's
+// (OOXML semantics), seeded by the document-level default (docHeader/docFooter)
+// for leading sections that declare none. Transient tags are stripped here.
+// Returns one section for a single-section doc.
 async function buildSections(
   blocks: Block[],
   bodyPageSize: PageSize,
@@ -152,10 +154,17 @@ async function buildSections(
   }
   if (cur.length) raw.push({ blocks: cur, pageSize: bodyPageSize, refs: bodyRefs })
 
+  // Walk sections in document order, carrying the last resolved header/footer
+  // forward. A section with its own reference overrides the carry (and becomes
+  // what later sections inherit); one without keeps the previous section's.
   const sections: Section[] = []
+  let carriedHeader = docHeader
+  let carriedFooter = docFooter
   for (const s of raw) {
-    const header = (await resolveRef(s.refs.headerRId, 'header')) ?? docHeader
-    const footer = (await resolveRef(s.refs.footerRId, 'footer')) ?? docFooter
+    if (s.refs.headerRId) carriedHeader = (await resolveRef(s.refs.headerRId, 'header')) ?? carriedHeader
+    if (s.refs.footerRId) carriedFooter = (await resolveRef(s.refs.footerRId, 'footer')) ?? carriedFooter
+    const header = carriedHeader
+    const footer = carriedFooter
     sections.push({
       blocks: s.blocks,
       pageSize: s.pageSize,

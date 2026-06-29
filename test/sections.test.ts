@@ -158,6 +158,44 @@ describe('per-section headers/footers', () => {
     expect(textOf(doc.sections![1].header)).toBe('ONLY HEADER')
   })
 
+  it('inherits the previous section header, not the document default', async () => {
+    // Three sections: S1 declares header A, S2 declares header B, S3 declares
+    // none. S3 must inherit S2's B (the previous section), not S1's A (the
+    // doc-level default, which is the first reference in the document).
+    const body =
+      `<w:p><w:r><w:t>one</w:t></w:r></w:p>` +
+      `<w:p><w:pPr><w:sectPr>${HREF('rId10')}${PORTRAIT}</w:sectPr></w:pPr></w:p>` +
+      `<w:p><w:r><w:t>two</w:t></w:r></w:p>` +
+      `<w:p><w:pPr><w:sectPr>${HREF('rId11')}${PORTRAIT}</w:sectPr></w:pPr></w:p>` +
+      `<w:p><w:r><w:t>three</w:t></w:r></w:p>` +
+      `<w:sectPr>${LANDSCAPE}</w:sectPr>`
+    const doc = await parse(await buildDocxWith(body,
+      { 'header1.xml': hdr('HEADER A'), 'header2.xml': hdr('HEADER B') },
+      `<Relationship Id="rId10" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>` +
+      `<Relationship Id="rId11" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header2.xml"/>`))
+    expect(doc.sections!.length).toBe(3)
+    expect(textOf(doc.sections![0].header)).toBe('HEADER A')
+    expect(textOf(doc.sections![1].header)).toBe('HEADER B')
+    expect(textOf(doc.sections![2].header)).toBe('HEADER B')
+  })
+
+  it('inherits header and footer independently', async () => {
+    // S1 declares a footer only; S2 declares a header only. S2 must inherit S1's
+    // footer while using its own header.
+    const body =
+      `<w:p><w:r><w:t>one</w:t></w:r></w:p>` +
+      `<w:p><w:pPr><w:sectPr><w:footerReference w:type="default" r:id="rId20"/>${PORTRAIT}</w:sectPr></w:pPr></w:p>` +
+      `<w:p><w:r><w:t>two</w:t></w:r></w:p>` +
+      `<w:sectPr>${HREF('rId10')}${LANDSCAPE}</w:sectPr>`
+    const doc = await parse(await buildDocxWith(body,
+      { 'header1.xml': hdr('HEAD'), 'footer1.xml': hdr('FOOT').replace(/hdr/g, 'ftr') },
+      `<Relationship Id="rId10" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>` +
+      `<Relationship Id="rId20" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/>`))
+    expect(textOf(doc.sections![0].footer)).toBe('FOOT')
+    expect(textOf(doc.sections![1].footer)).toBe('FOOT') // inherited from S1
+    expect(textOf(doc.sections![1].header)).toBe('HEAD') // S2's own
+  })
+
   it('strips the transient sectionRefs tag from the IR', async () => {
     const body =
       `<w:p><w:pPr><w:sectPr>${HREF('rId10')}${PORTRAIT}</w:sectPr></w:pPr></w:p>` +
