@@ -94,16 +94,10 @@ async function parseRun(
 ): Promise<Run | null> {
   const rPr = r.rPr as Record<string, unknown> | undefined
 
-  // A PAGE field becomes a page-number marker (resolved per page at render time).
-  if ('instrText' in r) {
-    const instr = (typeof r.instrText === 'object' && r.instrText !== null
-      ? String((r.instrText as Record<string, string>)['#text'] ?? '')
-      : String(r.instrText)).trim().toUpperCase()
-    if (instr === 'PAGE') {
-      return { type: 'run', text: '', style: Object.assign({}, paraStyle, extractRPr(rPr)), pageNumber: true }
-    }
-    return null // other field codes are skipped
-  }
+  // Field instructions and field characters are handled by the field state
+  // machine in parseParagraph (so PAGE/NUMPAGES resolve live and their cached
+  // result is suppressed). They never reach parseRun, but guard defensively.
+  if ('instrText' in r) return null
 
   // Skip field characters and a note's own auto-number marker.
   if ('fldChar' in r) return null
@@ -296,8 +290,34 @@ async function parseParagraph(
     for (const hl of hyperlinks) inputs.push(...hlInputs(hl))
   }
 
+  // Field state machine. A complex field is begin → instrText(code) → separate →
+  // cached-result-runs → end. PAGE / NUMPAGES are resolved live (a marker is
+  // emitted at the field code), so their cached result runs are suppressed to
+  // avoid rendering the live value AND a stale cached number side by side.
+  const LIVE_FIELDS = new Set(['PAGE', 'NUMPAGES', 'SECTIONPAGES'])
+  const fieldStack: { name: string; inResult: boolean }[] = []
   const runs: Run[] = []
   for (const { r, href } of inputs) {
+    if ('fldChar' in r) {
+      const t = (r.fldChar as Record<string, string>)?.fldCharType
+      if (t === 'begin') fieldStack.push({ name: '', inResult: false })
+      else if (t === 'separate') { if (fieldStack.length) fieldStack[fieldStack.length - 1].inResult = true }
+      else if (t === 'end') fieldStack.pop()
+      continue
+    }
+    if ('instrText' in r) {
+      const instr = (typeof r.instrText === 'object' && r.instrText !== null
+        ? String((r.instrText as Record<string, string>)['#text'] ?? '')
+        : String(r.instrText)).trim().toUpperCase()
+      const field = instr.split(/\s+/)[0]
+      if (fieldStack.length) fieldStack[fieldStack.length - 1].name = field
+      const mStyle = Object.assign({}, paraStyle, extractRPr(r.rPr as Record<string, unknown> | undefined))
+      if (field === 'PAGE') runs.push({ type: 'run', text: '', style: mStyle, pageNumber: true })
+      else if (field === 'NUMPAGES' || field === 'SECTIONPAGES') runs.push({ type: 'run', text: '', style: mStyle, totalPages: true })
+      continue
+    }
+    // Suppress the cached result of a live (PAGE/NUMPAGES) field.
+    if (fieldStack.some(f => f.inResult && LIVE_FIELDS.has(f.name))) continue
     const run = await parseRun(r, paraStyle, ctx, href)
     if (run !== null) runs.push(run)
   }

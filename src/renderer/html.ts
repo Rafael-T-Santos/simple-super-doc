@@ -60,6 +60,16 @@ function renderRun(run: Run, parent: HTMLElement, skipLeadingTabs = false): void
     return
   }
 
+  // NUMPAGES field: a placeholder filled with the total page count once the
+  // document is fully paginated (see fillTotalPages).
+  if (textRun.totalPages) {
+    const span = document.createElement('span')
+    span.dataset.ssdNumpages = '1'
+    span.textContent = '1'
+    target.appendChild(span)
+    return
+  }
+
   // Footnote/endnote marker: a superscript number linking to the notes section.
   if (textRun.noteRef) {
     const { type, number } = textRun.noteRef
@@ -225,6 +235,12 @@ function renderFooter(doc: DocxDocument, pageDiv: HTMLElement, pageNum: number, 
   renderBlocks(doc.footer, el)
   pageDiv.appendChild(el)
   currentPageNumber = prev
+}
+
+// Replace every NUMPAGES placeholder (rendered by renderRun) with the final
+// total page count, once the document has been fully paginated.
+function fillTotalPages(container: HTMLElement, total: number): void {
+  container.querySelectorAll('[data-ssd-numpages]').forEach(el => { el.textContent = String(total) })
 }
 
 // Render the document's header at the top of a page box, resolving PAGE fields
@@ -651,6 +667,10 @@ function renderPlainPaginated(
   pages.forEach((page, i) => renderFooter(doc, page, i + 1, pm, footerPx))
   const headerPx = doc.pageSize?.headerPx ?? Math.round(pm.top / 2)
   pages.forEach((page, i) => renderHeader(doc, page, i + 1, pm, headerPx))
+
+  // NUMPAGES = total rendered pages (body + any endnote page), filled now that
+  // pagination is final.
+  fillTotalPages(container, container.querySelectorAll('.ssd-page').length)
 }
 
 export function render(doc: DocxDocument, container: HTMLElement): void {
@@ -666,6 +686,7 @@ export function render(doc: DocxDocument, container: HTMLElement): void {
   if (!ps || ps.widthPx === 0 || ps.heightPx === 0) {
     renderBlocks(doc.blocks, container)
     renderNotes(doc, container)
+    fillTotalPages(container, 1)
     return
   }
 
@@ -892,4 +913,7 @@ export function render(doc: DocxDocument, container: HTMLElement): void {
     div.appendChild(content)
     container.appendChild(div)
   }
+
+  // NUMPAGES = total rendered pages, now that all page boxes exist.
+  fillTotalPages(container, container.querySelectorAll('.ssd-page').length)
 }

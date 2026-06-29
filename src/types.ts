@@ -38,6 +38,7 @@ export type TextRun = {
   href?: string  // set when the run is inside a w:hyperlink (external URL or #bookmark)
   noteRef?: { type: 'footnote' | 'endnote'; number: number }  // a footnote/endnote marker
   pageNumber?: boolean  // a PAGE field — rendered as the current page number
+  totalPages?: boolean  // a NUMPAGES field — rendered as the total page count
   lineBreak?: boolean   // a w:br (soft line break) — rendered as <br> after the text
   pageBreak?: boolean   // a w:br w:type="page" — splits the paragraph onto a new page (transient marker; never rendered)
   tabs?: number         // count of leading w:tab elements — rendered as spacers
