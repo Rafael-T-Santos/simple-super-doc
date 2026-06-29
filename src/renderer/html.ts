@@ -1,4 +1,4 @@
-import type { DocxDocument, Block, ParagraphBlock, TableBlock, TextRun, ImageRun, Run, ComputedStyle } from '../types.js'
+import type { DocxDocument, Block, ParagraphBlock, TableBlock, TextRun, ImageRun, Run, ComputedStyle, NoteEntry } from '../types.js'
 import {
   EMPTY_LINE_EM, LINE_HEIGHT,
   extractPageBackground, isBlockVisible, isHeadingBlock, isIconOnly,
@@ -79,14 +79,17 @@ function renderRun(run: Run, parent: HTMLElement): void {
   }
 }
 
-// Render the footnote and endnote sections at the end of the document. Each note
-// is an <li> (numbered to match its in-text marker) with a back-reference link.
-function renderNotes(doc: DocxDocument, container: HTMLElement): void {
-  const sections: Array<{ kind: 'footnote' | 'endnote'; prefix: string; label: string; notes: DocxDocument['footnotes'] }> = [
-    { kind: 'footnote', prefix: 'fn', label: 'Footnotes', notes: doc.footnotes },
-    { kind: 'endnote', prefix: 'en', label: 'Endnotes', notes: doc.endnotes },
-  ]
-  for (const { prefix, label, notes } of sections) {
+// Render the footnote and/or endnote sections at the end of the document. Each
+// note is an <li> (numbered to match its in-text marker) with a back-reference.
+function renderNotes(
+  doc: DocxDocument,
+  container: HTMLElement,
+  opts: { footnotes?: boolean; endnotes?: boolean } = { footnotes: true, endnotes: true },
+): void {
+  const all: Array<{ prefix: string; label: string; notes: DocxDocument['footnotes'] }> = []
+  if (opts.footnotes) all.push({ prefix: 'fn', label: 'Footnotes', notes: doc.footnotes })
+  if (opts.endnotes) all.push({ prefix: 'en', label: 'Endnotes', notes: doc.endnotes })
+  for (const { prefix, label, notes } of all) {
     if (!notes || notes.length === 0) continue
     const section = document.createElement('section')
     section.className = `ssd-${prefix === 'fn' ? 'footnotes' : 'endnotes'}`
@@ -142,6 +145,52 @@ let inTableCell = false
 
 // The page number substituted for PAGE fields, set per page by renderFooter.
 let currentPageNumber = 0
+
+// Footnote-rule height budget (separator rule + gap) when reserving page space.
+const FOOTNOTE_SEPARATOR_H = 12
+
+// Footnote numbers referenced inside a rendered element (from <sup id="fnref-N">).
+function footnoteNumbersIn(el: HTMLElement): number[] {
+  return Array.from(el.querySelectorAll('sup[id^="fnref-"]'))
+    .map(s => parseInt((s as HTMLElement).id.slice('fnref-'.length), 10))
+    .filter(n => !Number.isNaN(n))
+}
+
+// One footnote at the bottom of a page: "N <content>" with a back-reference.
+function buildFootnoteItem(fn: NoteEntry): HTMLElement {
+  const item = document.createElement('div')
+  item.style.cssText = 'display:flex;gap:6px;align-items:baseline'
+  const num = document.createElement('span')
+  num.id = `fn-${fn.number}`
+  num.textContent = String(fn.number)
+  num.style.flex = '0 0 auto'
+  const content = document.createElement('div')
+  renderBlocks(fn.blocks, content)
+  const back = document.createElement('a')
+  back.setAttribute('href', `#fnref-${fn.number}`)
+  back.textContent = ' ↩'
+  content.appendChild(back)
+  item.append(num, content)
+  return item
+}
+
+// Render the given footnotes at the bottom of a page (above the footer), with a
+// short separator rule, matching Word's per-page footnote placement.
+function renderPageFootnotes(footnotes: NoteEntry[], pageDiv: HTMLElement, numbers: number[], pm: PageMargins): void {
+  if (numbers.length === 0) return
+  const box = document.createElement('div')
+  box.className = 'ssd-footnotes'
+  box.style.cssText =
+    `position:absolute;left:${pm.left}px;right:${pm.right}px;bottom:${pm.bottom}px;font-size:9pt;line-height:1.3`
+  const sep = document.createElement('div')
+  sep.style.cssText = 'border-top:1px solid #999;width:33%;margin-bottom:4px'
+  box.appendChild(sep)
+  for (const n of numbers) {
+    const fn = footnotes.find(f => f.number === n)
+    if (fn) box.appendChild(buildFootnoteItem(fn))
+  }
+  pageDiv.appendChild(box)
+}
 
 // Render the document's footer at the bottom of a page box, resolving PAGE
 // fields to the given page number.
@@ -387,18 +436,47 @@ function renderPlainPaginated(
   const stageH = stage.scrollHeight
   const heights = children.map((_, i) => (i + 1 < children.length ? tops[i + 1] : stageH) - tops[i])
 
+  const footnotes = doc.footnotes ?? []
+  // Pre-measure each footnote at the page content width so we can reserve space.
+  const footnoteH: Record<number, number> = {}
+  for (const fn of footnotes) {
+    const item = buildFootnoteItem(fn)
+    item.style.position = 'absolute'
+    item.style.visibility = 'hidden'
+    item.style.width = `${contentW}px`
+    stage.appendChild(item)
+    footnoteH[fn.number] = item.offsetHeight
+    stage.removeChild(item)
+  }
+
   const pages: HTMLElement[] = []
+  const pageFootnotes: number[][] = []
+  let pageDiv: HTMLElement
+  let used = 0       // content height consumed on the current page
+  let reserve = 0    // height reserved at the bottom for this page's footnotes
+  let pageHasFn = false
+
   const newPage = (): HTMLElement => {
     const div = document.createElement('div')
     div.className = 'ssd-page'
     div.style.cssText = pageBoxStyle(pw, ph, pm)
     container.appendChild(div)
     pages.push(div)
+    pageFootnotes.push([])
+    used = 0; reserve = 0; pageHasFn = false
     return div
   }
+  // Space a set of footnotes adds to the page bottom (+ separator if first ones).
+  const fnReserve = (nums: number[], hasFn: boolean): number =>
+    nums.length === 0 ? 0 : (hasFn ? 0 : FOOTNOTE_SEPARATOR_H) + nums.reduce((a, n) => a + (footnoteH[n] ?? 0), 0)
+  const recordFootnotes = (nums: number[], add: number): void => {
+    if (nums.length === 0) return
+    pageFootnotes[pages.length - 1].push(...nums)
+    reserve += add
+    pageHasFn = true
+  }
 
-  let pageDiv = newPage()
-  let used = 0
+  pageDiv = newPage()
   for (let i = 0; i < children.length; i++) {
     const child = children[i]
     const forced = child.dataset.ssdBreak === '1'
@@ -406,42 +484,64 @@ function renderPlainPaginated(
     // Tables can split across pages: rows that fit stay, the rest continue on
     // the next page (and split again if still too tall).
     if (child.tagName === 'TABLE') {
-      if (forced && used > 0) { pageDiv = newPage(); used = 0 }
+      if (forced && used > 0) pageDiv = newPage()
       let table = child as HTMLTableElement
       for (;;) {
         pageDiv.appendChild(table)
         const th = table.offsetHeight
-        if (used + th <= contentH) { used += th; break } // fits
-        const rest = splitTableRows(table, contentH - used)
+        if (used + th <= contentH - reserve) { used += th; break } // fits
+        const rest = splitTableRows(table, contentH - reserve - used)
         if (!rest) {
           if (used === 0) { used += th; break } // taller than a full page; accept overflow
           pageDiv.removeChild(table)
-          pageDiv = newPage(); used = 0
+          pageDiv = newPage()
           continue // retry on a fresh page
         }
         // `table` now holds the rows that fit; `rest` continues on a new page.
-        pageDiv = newPage(); used = 0
+        pageDiv = newPage()
         table = rest
       }
+      const refs = footnoteNumbersIn(table)
+      recordFootnotes(refs, fnReserve(refs, pageHasFn))
       continue
     }
 
     const h = heights[i]
-    if ((forced && used > 0) || (used > 0 && used + h > contentH)) {
+    const refs = footnoteNumbersIn(child)
+    let add = fnReserve(refs, pageHasFn)
+    if ((forced && used > 0) || (used > 0 && used + h > contentH - reserve - add)) {
       pageDiv = newPage()
-      used = 0
+      add = fnReserve(refs, false) // fresh page: no footnotes yet, so include separator
     }
     pageDiv.appendChild(child) // moves the node out of the stage
     used += h
+    recordFootnotes(refs, add)
   }
   stage.remove()
 
-  // Footnotes/endnotes on their own final page.
-  const noteHost = document.createElement('div')
-  renderNotes(doc, noteHost)
-  if (noteHost.childNodes.length > 0) {
-    const div = newPage()
-    while (noteHost.firstChild) div.appendChild(noteHost.firstChild)
+  // Drop blank pages (only empty paragraphs, no footnotes) — e.g. trailing empty
+  // paragraphs pushed onto a new page by footnote reservation.
+  for (let i = pages.length - 1; i >= 0; i--) {
+    const hasFn = pageFootnotes[i].length > 0
+    const hasContent = (pages[i].textContent ?? '').trim().length > 0 || !!pages[i].querySelector('img,table')
+    if (!hasFn && !hasContent) {
+      pages[i].remove()
+      pages.splice(i, 1)
+      pageFootnotes.splice(i, 1)
+    }
+  }
+
+  // Footnotes at the bottom of the page that holds their reference (like Word).
+  pages.forEach((page, i) => renderPageFootnotes(footnotes, page, pageFootnotes[i], pm))
+
+  // Endnotes (if any) go to their own final page at the end of the document.
+  if (doc.endnotes && doc.endnotes.length > 0) {
+    const endHost = document.createElement('div')
+    renderNotes(doc, endHost, { endnotes: true })
+    if (endHost.childNodes.length > 0) {
+      const div = newPage()
+      while (endHost.firstChild) div.appendChild(endHost.firstChild)
+    }
   }
 
   // Page footer (with page numbers) on every page.
