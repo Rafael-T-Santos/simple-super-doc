@@ -913,10 +913,18 @@ function renderPageBgPaginated(doc: DocxDocument, container: HTMLElement): void 
   }
 
   // pageBg[p]: distinct bg k covers page k; the last one fills all trailing pages.
+  // bgStartsHere[p]: a distinct background REGION begins on this page (a genuine
+  // cover/divider page), as opposed to a page that merely inherits the last
+  // background. The distinction matters when dropping blank pages below: a cover
+  // whose only text is an emptied template variable has no visible flow but is a
+  // real page and must keep its background; empty runoff that just trails the
+  // last background must still be dropped.
   const pageBg: Array<ImageRun | null> = new Array(totalPages).fill(null)
+  const bgStartsHere: boolean[] = new Array(totalPages).fill(false)
   for (let k = 0; k < distinctBgs.length; k++) {
     const startPage = Math.min(k, totalPages - 1)
     const end = k + 1 < distinctBgs.length ? Math.min(k + 1, totalPages) : totalPages
+    bgStartsHere[startPage] = true
     for (let p = startPage; p < end; p++) pageBg[p] = distinctBgs[k]
   }
 
@@ -978,8 +986,11 @@ function renderPageBgPaginated(doc: DocxDocument, container: HTMLElement): void 
     const isNotePage = p === totalPages - 1 && notePage.childNodes.length > 0 && blocks.length === 0
 
     // Skip blank pages (only empty paragraphs) — trailing/standalone whitespace
-    // would otherwise produce an empty page.
-    if (!isNotePage && !blocks.some(isBlockVisible)) continue
+    // would otherwise produce an empty page. A page where a background region
+    // begins is a genuine template page (cover/divider) and is kept even with no
+    // visible flow, so its background still renders.
+    const isGenuineBgPage = bgStartsHere[p] && (pageBg[p] !== null || pageWatermarks[p].length > 0)
+    if (!isNotePage && !blocks.some(isBlockVisible) && !isGenuineBgPage) continue
 
     const div = document.createElement('div')
     div.className = 'ssd-page'
