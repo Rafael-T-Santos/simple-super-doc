@@ -105,9 +105,20 @@ async function parseRun(
     return null // other field codes are skipped
   }
 
-  // Skip field characters, line breaks, and a note's own auto-number marker.
-  if ('fldChar' in r || 'br' in r) return null
+  // Skip field characters and a note's own auto-number marker.
+  if ('fldChar' in r) return null
   if ('footnoteRef' in r || 'endnoteRef' in r) return null
+
+  // w:br: a soft line break becomes a <br>; a page break has no place in the
+  // continuous flow model, so it's dropped (paragraph-level pageBreakBefore is
+  // handled separately).
+  let lineBreak = false
+  if ('br' in r) {
+    const br = r.br as Record<string, string> | string | undefined
+    const brType = typeof br === 'object' && br !== null ? br.type : undefined
+    if (brType === 'page' || brType === 'column') return null
+    lineBreak = true
+  }
 
   // Character style at cascade level 2 for this specific run
   const rStyleId = getVal(rPr?.rStyle as unknown)
@@ -177,7 +188,11 @@ async function parseRun(
     text = String(tNode)
   }
 
-  const textRun: TextRun = { type: 'run', text, style: runStyle, ...(href ? { href } : {}) }
+  const textRun: TextRun = {
+    type: 'run', text, style: runStyle,
+    ...(href ? { href } : {}),
+    ...(lineBreak ? { lineBreak: true } : {}),
+  }
   return textRun
 }
 

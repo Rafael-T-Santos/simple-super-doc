@@ -11,6 +11,14 @@ const parser = new XMLParser({
   isArray: (name) => name === 'style',
 })
 
+// OOXML w:highlight named colors → CSS colors.
+const HIGHLIGHT_COLORS: Record<string, string> = {
+  yellow: 'yellow', green: 'lime', cyan: 'cyan', magenta: 'magenta', red: 'red',
+  blue: 'blue', white: 'white', black: 'black', darkBlue: 'darkblue',
+  darkCyan: 'darkcyan', darkGreen: 'darkgreen', darkMagenta: 'darkmagenta',
+  darkRed: 'darkred', darkYellow: '#808000', darkGray: '#a9a9a9', lightGray: '#d3d3d3',
+}
+
 // Extract ComputedStyle from a raw rPr/pPr node (already namespace-stripped).
 export function extractRPr(rPr: Record<string, unknown> | undefined): ComputedStyle {
   if (!rPr) return {}
@@ -39,6 +47,27 @@ export function extractRPr(rPr: Record<string, unknown> | undefined): ComputedSt
     } else {
       s.underline = true
     }
+  }
+
+  // strikethrough
+  if ('strike' in rPr) {
+    const st = rPr.strike as Record<string, string> | undefined
+    const val = typeof st === 'object' && st !== null ? st.val : undefined
+    s.strike = !(val === '0' || val === 'false' || val === 'off')
+  }
+
+  // super/subscript
+  if ('vertAlign' in rPr) {
+    const va = (rPr.vertAlign as Record<string, string>)?.val
+    if (va === 'superscript') s.vertAlign = 'super'
+    else if (va === 'subscript') s.vertAlign = 'sub'
+  }
+
+  // named highlight color (distinct from w:shd fill)
+  if ('highlight' in rPr) {
+    const val = (rPr.highlight as Record<string, string>)?.val
+    const css = HIGHLIGHT_COLORS[val ?? '']
+    if (css) s.highlight = css
   }
 
   // font size: w:sz stores HALF-POINTS

@@ -36,6 +36,7 @@ export type TextRun = {
   href?: string  // set when the run is inside a w:hyperlink (external URL or #bookmark)
   noteRef?: { type: 'footnote' | 'endnote'; number: number }  // a footnote/endnote marker
   pageNumber?: boolean  // a PAGE field — rendered as the current page number
+  lineBreak?: boolean   // a w:br (soft line break) — rendered as <br> after the text
 }
 
 export type ImageRun = {
@@ -79,11 +80,14 @@ export type ComputedStyle = {
   bold?: boolean
   italic?: boolean
   underline?: boolean
+  strike?: boolean       // w:strike — strikethrough
+  vertAlign?: 'super' | 'sub'  // w:vertAlign — super/subscript
   fontSize?: number      // in points (pt); w:sz stores half-points → divide by 2
   fontFamily?: string    // from w:rFonts w:ascii (fallback w:hAnsi)
   color?: string         // hex e.g. "FF0000"; "auto" is filtered out at parse time
   alignment?: 'left' | 'center' | 'right' | 'justify'
   backgroundColor?: string  // hex from w:shd fill (e.g. "ff6109"), no # prefix
+  highlight?: string     // CSS color name from w:highlight (e.g. "yellow")
   // Paragraph spacing (from w:spacing). Run-level styles ignore these.
   spaceBefore?: number   // px, from w:spacing w:before (twips)
   spaceAfter?: number    // px, from w:spacing w:after (twips)

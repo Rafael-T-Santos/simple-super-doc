@@ -9,12 +9,20 @@ function styleToCss(s: ComputedStyle): string {
   const parts: string[] = []
   if (s.bold) parts.push('font-weight:bold')
   if (s.italic) parts.push('font-style:italic')
-  if (s.underline) parts.push('text-decoration:underline')
-  if (s.fontSize != null) parts.push(`font-size:${s.fontSize}pt`)
+  // underline and strikethrough combine into one text-decoration.
+  const deco = [s.underline ? 'underline' : '', s.strike ? 'line-through' : ''].filter(Boolean)
+  if (deco.length) parts.push(`text-decoration:${deco.join(' ')}`)
+  if (s.vertAlign) {
+    parts.push(`vertical-align:${s.vertAlign}`)
+    parts.push('font-size:0.83em') // browsers shrink super/subscript text
+  } else if (s.fontSize != null) {
+    parts.push(`font-size:${s.fontSize}pt`)
+  }
   if (s.fontFamily) parts.push(`font-family:${s.fontFamily},sans-serif`)
   if (s.color) parts.push(`color:#${s.color}`)
   if (s.alignment) parts.push(`text-align:${s.alignment}`)
   if (s.backgroundColor) parts.push(`background-color:#${s.backgroundColor}`)
+  if (s.highlight) parts.push(`background-color:${s.highlight}`)
   return parts.join(';')
 }
 
@@ -68,15 +76,20 @@ function renderRun(run: Run, parent: HTMLElement): void {
 
   const css = styleToCss(textRun.style)
 
-  if (css) {
-    const span = document.createElement('span')
-    span.style.cssText = css
-    // SECURITY: use textContent, never innerHTML
-    span.textContent = textRun.text
-    target.appendChild(span)
-  } else {
-    target.appendChild(document.createTextNode(textRun.text))
+  if (textRun.text) {
+    if (css) {
+      const span = document.createElement('span')
+      span.style.cssText = css
+      // SECURITY: use textContent, never innerHTML
+      span.textContent = textRun.text
+      target.appendChild(span)
+    } else {
+      target.appendChild(document.createTextNode(textRun.text))
+    }
   }
+
+  // A soft line break (w:br) renders after the run's text.
+  if (textRun.lineBreak) target.appendChild(document.createElement('br'))
 }
 
 // Render the footnote and/or endnote sections at the end of the document. Each
