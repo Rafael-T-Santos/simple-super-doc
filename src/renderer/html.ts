@@ -413,6 +413,13 @@ function renderTable(block: TableBlock, container: HTMLElement): void {
       if (cell.colSpan > 1) td.colSpan = cell.colSpan
       if (cell.rowSpan > 1) td.rowSpan = cell.rowSpan
       if (cell.backgroundColor) td.style.backgroundColor = `#${cell.backgroundColor}`
+      // Cell borders resolved by cascade (table style → tblBorders → tcBorders).
+      if (cell.border) {
+        if (cell.border.top) td.style.borderTop = cell.border.top
+        if (cell.border.right) td.style.borderRight = cell.border.right
+        if (cell.border.bottom) td.style.borderBottom = cell.border.bottom
+        if (cell.border.left) td.style.borderLeft = cell.border.left
+      }
       // Cell padding from the document's w:tcMar (keeps rows as compact as Word).
       if (pad) td.style.padding = `${pad.top}px ${pad.right}px ${pad.bottom}px ${pad.left}px`
       td.style.verticalAlign = 'top'

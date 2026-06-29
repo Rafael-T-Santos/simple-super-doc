@@ -99,6 +99,16 @@ export type TableCell = {
   colSpan: number   // 1 = no merge
   blocks: Block[]
   backgroundColor?: string  // hex from w:shd fill (e.g. "ff6109"), no # prefix
+  border?: CellBorders      // effective cell borders (table style ∪ tblBorders ∪ tcBorders)
+}
+
+// Per-side CSS border shorthands (e.g. "1px solid #000"). A side is absent when
+// no border applies there. Resolved by cascade: table style → tblBorders → tcBorders.
+export type CellBorders = {
+  top?: string
+  right?: string
+  bottom?: string
+  left?: string
 }
 
 // Counter increment is the renderer's responsibility.

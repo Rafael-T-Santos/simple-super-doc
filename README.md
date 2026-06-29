@@ -41,7 +41,9 @@ non-docx or malformed input.
   (including OOXML justified `both`), spacing, indentation and borders, and the
   full style cascade (docDefaults → named style → direct formatting).
 - **Structure** — numbered and bulleted lists (nested), tables with
-  `gridSpan`/`vMerge`, column widths and cell margins, and block/run ordering
+  `gridSpan`/`vMerge`, column widths, cell margins and cell borders (resolved by
+  cascade: table style → `tblBorders` → `tcBorders`, so borders that come only
+  from a table style like `TableGrid` are drawn), and block/run ordering
   recovered from the raw XML (paragraphs, tables, mid-paragraph hyperlinks and
   tracked changes keep their real sequence — in the body **and inside cells**).
 - **Images** — inline and anchored, as base64 data URLs.

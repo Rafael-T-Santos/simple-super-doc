@@ -104,6 +104,55 @@ export function extractRPr(rPr: Record<string, unknown> | undefined): ComputedSt
 
 const twipsToPx = (twips: string): number => Math.round((parseFloat(twips) * 96) / 1440)
 
+// A single OOXML border element (w:top/w:left/… with val/sz/color) → a CSS
+// border shorthand. Returns 'none' for an explicit nil/none border (so a cascade
+// can distinguish "no border here" from "not specified"), or undefined when the
+// element is absent/unusable. sz is in eighths of a point.
+export function borderSideCss(b: Record<string, string> | undefined): string | undefined {
+  if (!b || typeof b !== 'object') return undefined
+  const val = b.val
+  if (!val) return undefined
+  if (val === 'nil' || val === 'none') return 'none'
+  const px = Math.max(1, Math.round((b.sz ? parseFloat(b.sz) / 8 : 0.5) * 96 / 72))
+  const lineStyle = val === 'double' ? 'double' : val === 'dashed' ? 'dashed' : val === 'dotted' ? 'dotted' : 'solid'
+  const color = b.color && b.color !== 'auto' ? `#${b.color}` : '#000'
+  return `${px}px ${lineStyle} ${color}`
+}
+
+// All sides of a w:tblBorders / w:tcBorders node, as CSS shorthands (or 'none').
+export type RawBorders = {
+  top?: string; bottom?: string; left?: string; right?: string; insideH?: string; insideV?: string
+}
+export function extractBorders(node: Record<string, unknown> | undefined): RawBorders {
+  if (!node) return {}
+  const out: RawBorders = {}
+  for (const side of ['top', 'bottom', 'left', 'right', 'insideH', 'insideV'] as const) {
+    const css = borderSideCss(node[side] as Record<string, string> | undefined)
+    if (css !== undefined) out[side] = css
+  }
+  return out
+}
+
+export type TableBorderMap = Record<string, RawBorders>
+
+// Resolve a table style's borders through its basedOn chain (TableGrid is
+// basedOn TableNormal, etc.). Later (more specific) styles win.
+function resolveTableBorders(
+  styleId: string,
+  rawStyles: Record<string, Record<string, unknown>>,
+  visited: Set<string>,
+): RawBorders {
+  if (visited.has(styleId)) return {}
+  visited.add(styleId)
+  const raw = rawStyles[styleId]
+  if (!raw) return {}
+  let base: RawBorders = {}
+  const basedOn = raw.basedOn as Record<string, string> | undefined
+  if (basedOn?.val) base = resolveTableBorders(basedOn.val, rawStyles, visited)
+  const tblPr = raw.tblPr as Record<string, unknown> | undefined
+  return { ...base, ...extractBorders(tblPr?.tblBorders as Record<string, unknown> | undefined) }
+}
+
 export function extractPPr(pPr: Record<string, unknown> | undefined): Partial<ComputedStyle> {
   if (!pPr) return {}
   const s: Partial<ComputedStyle> = {}
@@ -225,7 +274,7 @@ function resolveStyleChain(
   return Object.assign({}, base, pPrStyle, rPrStyle)
 }
 
-export function parseStyles(xml: string): { styleMap: StyleMap; docDefaults: ComputedStyle } {
+export function parseStyles(xml: string): { styleMap: StyleMap; docDefaults: ComputedStyle; tableBorderMap: TableBorderMap } {
   const doc = parser.parse(xml)
   const styles = doc?.styles ?? {}
 
@@ -251,5 +300,13 @@ export function parseStyles(xml: string): { styleMap: StyleMap; docDefaults: Com
     styleMap[id] = resolveStyleChain(id, rawStyles, new Set<string>())
   }
 
-  return { styleMap, docDefaults }
+  // Table styles (w:type="table") carry borders the cell cascade needs.
+  const tableBorderMap: TableBorderMap = {}
+  for (const id of Object.keys(rawStyles)) {
+    if (rawStyles[id].type !== 'table') continue
+    const borders = resolveTableBorders(id, rawStyles, new Set<string>())
+    if (Object.keys(borders).length) tableBorderMap[id] = borders
+  }
+
+  return { styleMap, docDefaults, tableBorderMap }
 }

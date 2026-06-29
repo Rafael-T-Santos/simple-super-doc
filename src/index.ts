@@ -75,7 +75,7 @@ export async function parse(buffer: ArrayBuffer): Promise<DocxDocument> {
   ])
 
   const relationshipMap = relsXml ? parseRelationships(relsXml) : {}
-  const { styleMap, docDefaults } = parseStyles(stylesXml)
+  const { styleMap, docDefaults, tableBorderMap } = parseStyles(stylesXml)
   const { abstractNumMap, numMap } = numberingXml
     ? parseNumbering(numberingXml)
     : emptyNumbering()
@@ -83,6 +83,7 @@ export async function parse(buffer: ArrayBuffer): Promise<DocxDocument> {
   const ctx: ParseContext = {
     styleMap,
     docDefaults,
+    tableBorderMap,
     abstractNumMap,
     numMap,
     relationshipMap,

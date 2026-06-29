@@ -2,10 +2,10 @@ import { XMLParser } from 'fast-xml-parser'
 import type JSZip from 'jszip'
 import type {
   Block, ParagraphBlock, TableBlock, TableCell, TableRow,
-  TextRun, ImageRun, Run, ComputedStyle, ListRef, PageSize,
+  TextRun, ImageRun, Run, ComputedStyle, ListRef, PageSize, CellBorders,
 } from '../types.js'
-import type { StyleMap } from './styles.js'
-import { extractRPr, extractPPr, extractMarkRPr } from './styles.js'
+import type { StyleMap, TableBorderMap, RawBorders } from './styles.js'
+import { extractRPr, extractPPr, extractMarkRPr, extractBorders } from './styles.js'
 import type { AbstractNumMap, NumMap } from './numbering.js'
 import type { RelationshipMap } from './relationships.js'
 import { resolveVMerge, type RawCell } from './table.js'
@@ -28,6 +28,7 @@ const parser = new XMLParser({
 export type ParseContext = {
   styleMap: StyleMap
   docDefaults: ComputedStyle
+  tableBorderMap: TableBorderMap
   abstractNumMap: AbstractNumMap
   numMap: NumMap
   relationshipMap: RelationshipMap
@@ -475,6 +476,25 @@ async function parseTable(
 ): Promise<TableBlock> {
   const rows = (tbl.tr ?? []) as Record<string, unknown>[]
 
+  // Effective table borders: the table style's borders (resolved through its
+  // basedOn chain, e.g. TableGrid) overlaid with any direct w:tblBorders. The
+  // grid look comes from a uniform per-cell border (the inside borders, falling
+  // back to an outer side); 'none' means explicitly off. Per-cell w:tcBorders
+  // override this below. This recovers borders that come only from a table
+  // style (no explicit tblBorders/tcBorders on the table).
+  const tblPrForBorders = tbl.tblPr as Record<string, unknown> | undefined
+  const tblStyleId = getVal(tblPrForBorders?.tblStyle as unknown)
+  const styleBorders: RawBorders = (tblStyleId && ctx.tableBorderMap[tblStyleId]) || {}
+  const tableBorders: RawBorders = {
+    ...styleBorders,
+    ...extractBorders(tblPrForBorders?.tblBorders as Record<string, unknown> | undefined),
+  }
+  const definedSide = (...vals: (string | undefined)[]) => vals.find(v => v && v !== 'none')
+  const uniformBorder = definedSide(
+    tableBorders.insideH, tableBorders.insideV,
+    tableBorders.top, tableBorders.bottom, tableBorders.left, tableBorders.right,
+  )
+
   // Map each cell node to its raw inner XML so cell paragraphs can recover run
   // order (a mid-cell hyperlink/insertion) like body paragraphs do. Built only
   // when the row/cell counts align with the parsed grid (else fall back safely).
@@ -529,6 +549,8 @@ async function parseTable(
       const cellBlocks = await parseBlockContainer(tc, ctx, cellOrder, cellParaXmls, cellTableXmls)
       const irCell: TableCell = { rowSpan: cell.rowSpan, colSpan: cell.colSpan, blocks: cellBlocks }
       if (cell.backgroundColor) irCell.backgroundColor = cell.backgroundColor
+      const border = resolveCellBorder((tc.tcPr as Record<string, unknown> | undefined), uniformBorder)
+      if (border) irCell.border = border
       irCells.push(irCell)
     }
     irRows.push({ cells: irCells })
@@ -557,6 +579,24 @@ async function parseTable(
     ...(columnWidths.some(w => w > 0) ? { columnWidths } : {}),
     ...(cellPadding ? { cellPadding } : {}),
   }
+}
+
+// Per-cell border: each side uses the cell's own w:tcBorders when present
+// ('none' = explicitly off, suppressing the uniform border), otherwise the
+// table's uniform border. Returns undefined when no side has a border.
+function resolveCellBorder(
+  tcPr: Record<string, unknown> | undefined,
+  uniform: string | undefined,
+): CellBorders | undefined {
+  const tcb = extractBorders(tcPr?.tcBorders as Record<string, unknown> | undefined)
+  const side = (s?: string): string | undefined => (s === 'none' ? undefined : (s ?? uniform))
+  const b: CellBorders = {}
+  const top = side(tcb.top), right = side(tcb.right), bottom = side(tcb.bottom), left = side(tcb.left)
+  if (top) b.top = top
+  if (right) b.right = right
+  if (bottom) b.bottom = bottom
+  if (left) b.left = left
+  return (b.top || b.right || b.bottom || b.left) ? b : undefined
 }
 
 // Page size/margins from a parsed <w:sectPr> object (pgSz + pgMar), in px.
