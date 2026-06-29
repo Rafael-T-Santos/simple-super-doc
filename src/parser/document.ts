@@ -22,7 +22,7 @@ const parser = new XMLParser({
   trimValues: false,
   isArray: (name) =>
     ['p', 'r', 'tbl', 'tr', 'tc', 'style', 'abstractNum', 'num', 'lvl', 'lvlOverride',
-     'hyperlink', 'bookmarkStart', 'ins', 'del', 'footnote', 'endnote'].includes(name),
+     'hyperlink', 'bookmarkStart', 'ins', 'del', 'fldSimple', 'footnote', 'endnote'].includes(name),
 })
 
 export type ParseContext = {
@@ -252,11 +252,15 @@ async function parseParagraph(
   // interleaved in document order (recovered from rawXml) so a hyperlink or
   // insertion in the middle of a paragraph isn't reordered to the end. Hyperlink
   // runs carry the resolved href so the renderer can wrap them in <a>.
-  type RunInput = { r: Record<string, unknown>; href?: string; deleted?: boolean; inserted?: boolean }
+  // fldSimple is a self-contained field: <w:fldSimple w:instr=" PAGE "> wraps
+  // its own cached-result runs. r is optional on those inputs (the field is
+  // resolved from the instr attribute, not from a run).
+  type RunInput = { r?: Record<string, unknown>; href?: string; deleted?: boolean; inserted?: boolean; fldSimple?: Record<string, unknown> }
   const directRuns = (p.r ?? []) as Record<string, unknown>[]
   const insList = (p.ins ?? []) as Record<string, unknown>[]
   const delList = (p.del ?? []) as Record<string, unknown>[]
   const hyperlinks = (p.hyperlink ?? []) as Record<string, unknown>[]
+  const fldSimpleList = (p.fldSimple ?? []) as Record<string, unknown>[]
 
   const insInputs = (ins: Record<string, unknown>): RunInput[] => {
     const inner = ins.r
@@ -278,26 +282,29 @@ async function parseParagraph(
   const order = rawXml ? getRunOrder(rawXml) : []
   // Use the recovered order only if it accounts for every grouped child; else
   // fall back to the safe (append-grouped) order.
-  const counts = { r: 0, hyperlink: 0, ins: 0, del: 0 }
+  const counts = { r: 0, hyperlink: 0, ins: 0, del: 0, fldSimple: 0 }
   for (const t of order) counts[t]++
   const orderOk = order.length > 0 &&
     counts.r === directRuns.length && counts.hyperlink === hyperlinks.length &&
-    counts.ins === insList.length && counts.del === delList.length
+    counts.ins === insList.length && counts.del === delList.length &&
+    counts.fldSimple === fldSimpleList.length
 
   const inputs: RunInput[] = []
   if (orderOk) {
-    let ri = 0, hi = 0, ii = 0, di = 0
+    let ri = 0, hi = 0, ii = 0, di = 0, fi = 0
     for (const t of order) {
       if (t === 'r') inputs.push({ r: directRuns[ri++] })
       else if (t === 'hyperlink') inputs.push(...hlInputs(hyperlinks[hi++]))
       else if (t === 'ins') inputs.push(...insInputs(insList[ii++]))
-      else inputs.push(...delInputs(delList[di++]))
+      else if (t === 'del') inputs.push(...delInputs(delList[di++]))
+      else inputs.push({ fldSimple: fldSimpleList[fi++] })
     }
   } else {
     for (const r of directRuns) inputs.push({ r })
     for (const ins of insList) inputs.push(...insInputs(ins))
     for (const del of delList) inputs.push(...delInputs(del))
     for (const hl of hyperlinks) inputs.push(...hlInputs(hl))
+    for (const fs of fldSimpleList) inputs.push({ fldSimple: fs })
   }
 
   // Field state machine. A complex field is begin → instrText(code) → separate →
@@ -307,7 +314,28 @@ async function parseParagraph(
   const LIVE_FIELDS = new Set(['PAGE', 'NUMPAGES', 'SECTIONPAGES'])
   const fieldStack: { name: string; inResult: boolean }[] = []
   const runs: Run[] = []
-  for (const { r, href, deleted, inserted } of inputs) {
+  for (const inp of inputs) {
+    // w:fldSimple — the compact field form. The field code lives in the instr
+    // attribute and the cached result is the element's child runs. Resolve
+    // PAGE/NUMPAGES live (suppressing the cached runs); for any other field
+    // render the cached result runs as-is.
+    if (inp.fldSimple) {
+      const fs = inp.fldSimple
+      const field = String((fs as Record<string, string>).instr ?? '').trim().toUpperCase().split(/\s+/)[0]
+      const innerRuns = (Array.isArray(fs.r) ? fs.r : fs.r ? [fs.r] : []) as Record<string, unknown>[]
+      const mStyle = Object.assign({}, paraStyle, extractRPr(innerRuns[0]?.rPr as Record<string, unknown> | undefined))
+      if (field === 'PAGE') runs.push({ type: 'run', text: '', style: mStyle, pageNumber: true })
+      else if (field === 'NUMPAGES' || field === 'SECTIONPAGES') runs.push({ type: 'run', text: '', style: mStyle, totalPages: true })
+      else {
+        for (const ir of innerRuns) {
+          const run = await parseRun(ir, paraStyle, ctx)
+          if (run !== null) runs.push(run)
+        }
+      }
+      continue
+    }
+    const r = inp.r as Record<string, unknown>
+    const { href, deleted, inserted } = inp
     if ('fldChar' in r) {
       const t = (r.fldChar as Record<string, string>)?.fldCharType
       if (t === 'begin') fieldStack.push({ name: '', inResult: false })
@@ -615,19 +643,19 @@ function extractRowCellInners(tableXml: string): string[][] {
 // insertions and deletions). fast-xml-parser groups these by tag, so a
 // hyperlink/insertion/deletion in the MIDDLE of a paragraph would otherwise be
 // reordered to the end.
-function getRunOrder(paraXml: string): Array<'r' | 'hyperlink' | 'ins' | 'del'> {
+function getRunOrder(paraXml: string): Array<'r' | 'hyperlink' | 'ins' | 'del' | 'fldSimple'> {
   let body = paraXml
   const pprEnd = body.indexOf('</w:pPr>')
   if (pprEnd !== -1) body = body.slice(pprEnd + 8) // skip paragraph properties
 
-  const order: Array<'r' | 'hyperlink' | 'ins' | 'del'> = []
-  const re = /<(\/?)w:(r|hyperlink|ins|del)[\s>\/]/g
-  let depth = 0    // inside a hyperlink/ins/del wrapper
+  const order: Array<'r' | 'hyperlink' | 'ins' | 'del' | 'fldSimple'> = []
+  const re = /<(\/?)w:(r|hyperlink|ins|del|fldSimple)[\s>\/]/g
+  let depth = 0    // inside a hyperlink/ins/del/fldSimple wrapper
   let inRun = false // inside a <w:r> (skip its rPr-change ins/del markers)
   let m: RegExpExecArray | null
   while ((m = re.exec(body)) !== null) {
     const isClose = m[1] === '/'
-    const tag = m[2] as 'r' | 'hyperlink' | 'ins' | 'del'
+    const tag = m[2] as 'r' | 'hyperlink' | 'ins' | 'del' | 'fldSimple'
     if (tag === 'r') {
       if (isClose) inRun = false
       else {
@@ -637,11 +665,13 @@ function getRunOrder(paraXml: string): Array<'r' | 'hyperlink' | 'ins' | 'del'> 
       continue
     }
     if (inRun) continue // an <w:ins>/<w:del> inside a run is an rPr change, not content
-    if (isClose) depth = Math.max(0, depth - 1)
-    else {
-      if (depth === 0) order.push(tag)
-      depth++
-    }
+    if (isClose) { depth = Math.max(0, depth - 1); continue }
+    // Opening wrapper. A self-closed element (e.g. <w:fldSimple .../>) has no
+    // matching close tag, so it must not push the depth.
+    const gt = body.indexOf('>', m.index)
+    const selfClose = gt > 0 && body[gt - 1] === '/'
+    if (depth === 0) order.push(tag)
+    if (!selfClose) depth++
   }
   return order
 }

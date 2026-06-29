@@ -82,3 +82,65 @@ describe('field codes', () => {
     expect(p.runs.some(r => (r as TextRun).text === 'Section 2')).toBe(true)
   })
 })
+
+// The compact field form: the instruction is an attribute and the children are
+// the cached result runs.
+const fldSimple = (instr: string, cached = '') =>
+  `<w:fldSimple w:instr=" ${instr} ">` + (cached ? `<w:r><w:t>${cached}</w:t></w:r>` : '') + `</w:fldSimple>`
+
+describe('fldSimple (compact fields)', () => {
+  it('PAGE resolves to a live page-number marker and suppresses the cached value', async () => {
+    const doc = await parse(await buildDocx(`<w:p>${fldSimple('PAGE \\* MERGEFORMAT', '7')}</w:p>`))
+    const p = doc.blocks[0] as ParagraphBlock
+    expect(p.runs.length).toBe(1)
+    expect((p.runs[0] as TextRun).pageNumber).toBe(true)
+    expect(p.runs.some(r => (r as TextRun).text === '7')).toBe(false)
+  })
+
+  it('NUMPAGES resolves to a total-pages marker', async () => {
+    const doc = await parse(await buildDocx(`<w:p>${fldSimple('NUMPAGES', '9')}</w:p>`))
+    const p = doc.blocks[0] as ParagraphBlock
+    expect(p.runs.some(r => (r as TextRun).totalPages)).toBe(true)
+    expect(p.runs.some(r => (r as TextRun).text === '9')).toBe(false)
+  })
+
+  it('a non-live field renders its cached result text', async () => {
+    const doc = await parse(await buildDocx(`<w:p>${fldSimple('DATE \\@ "yyyy-MM-dd"', '2026-06-29')}</w:p>`))
+    const p = doc.blocks[0] as ParagraphBlock
+    expect(p.runs.some(r => (r as TextRun).text === '2026-06-29')).toBe(true)
+    expect(p.runs.some(r => (r as TextRun).text.includes('DATE'))).toBe(false)
+  })
+
+  it('keeps document order when interleaved with surrounding text', async () => {
+    const body =
+      `<w:p><w:r><w:t xml:space="preserve">Page </w:t></w:r>` +
+      fldSimple('PAGE', '1') +
+      `<w:r><w:t xml:space="preserve"> of </w:t></w:r>` +
+      fldSimple('NUMPAGES', '2') +
+      `</w:p>`
+    const doc = await parse(await buildDocx(body))
+    const runs = (doc.blocks[0] as ParagraphBlock).runs as TextRun[]
+    expect(runs.some(r => r.pageNumber)).toBe(true)
+    expect(runs.some(r => r.totalPages)).toBe(true)
+    // markers sit between the literal text, not appended at the end
+    const pageIdx = runs.findIndex(r => r.pageNumber)
+    const ofIdx = runs.findIndex(r => r.text === ' of ')
+    expect(pageIdx).toBeGreaterThan(0)
+    expect(ofIdx).toBeGreaterThan(pageIdx)
+  })
+
+  it('a self-closed fldSimple does not break ordering of following runs', async () => {
+    const body =
+      `<w:p><w:r><w:t>A</w:t></w:r>` +
+      `<w:fldSimple w:instr=" PAGE "/>` +
+      `<w:r><w:t>B</w:t></w:r></w:p>`
+    const doc = await parse(await buildDocx(body))
+    const runs = (doc.blocks[0] as ParagraphBlock).runs as TextRun[]
+    expect(runs.find(r => r.text === 'A')).toBeTruthy()
+    expect(runs.find(r => r.text === 'B')).toBeTruthy()
+    expect(runs.some(r => r.pageNumber)).toBe(true)
+    const aIdx = runs.findIndex(r => r.text === 'A')
+    const bIdx = runs.findIndex(r => r.text === 'B')
+    expect(bIdx).toBeGreaterThan(aIdx)
+  })
+})
