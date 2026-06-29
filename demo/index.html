@@ -162,6 +162,12 @@
 
       <div class="ir-toggle">
         <label>
+          <input type="checkbox" id="rev-check" /> Show tracked changes
+        </label>
+      </div>
+
+      <div class="ir-toggle">
+        <label>
           <input type="checkbox" id="ir-check" /> Show typed IR (DocxDocument)
         </label>
         <pre id="ir-panel"></pre>
@@ -181,8 +187,17 @@
     const renderArea = document.getElementById('render-area')
     const irCheck = document.getElementById('ir-check')
     const irPanel = document.getElementById('ir-panel')
+    const revCheck = document.getElementById('rev-check')
 
     let lastDoc = null
+
+    // Re-render the loaded document with the current options (tracked changes).
+    function rerender() {
+      if (!lastDoc) return
+      renderArea.innerHTML = ''
+      render(lastDoc, renderArea, { showRevisions: revCheck.checked })
+    }
+    revCheck.addEventListener('change', rerender)
 
     irCheck.addEventListener('change', () => {
       irPanel.classList.toggle('visible', irCheck.checked)
@@ -221,7 +236,7 @@
         const doc = await parse(buffer)
         lastDoc = doc
 
-        render(doc, renderArea)
+        render(doc, renderArea, { showRevisions: revCheck.checked })
 
         status.className = 'ok'
         status.textContent = `Rendered — ${doc.blocks.length} blocks`

@@ -1,12 +1,12 @@
 import JSZip from 'jszip'
-import { DocxParseError, type DocxDocument, type NoteEntry } from './types.js'
+import { DocxParseError, type DocxDocument, type NoteEntry, type RenderOptions } from './types.js'
 import { parseRelationships } from './parser/relationships.js'
 import { parseStyles } from './parser/styles.js'
 import { parseNumbering, emptyNumbering } from './parser/numbering.js'
 import { parseDocument, parseNotesXml, parseFooterXml, parseHeaderXml, type ParseContext } from './parser/document.js'
 import { render as renderHtml } from './renderer/html.js'
 
-export type { DocxDocument, Block, ParagraphBlock, TableBlock, TableCell, TableRow, TextRun, ImageRun, Run, ComputedStyle, ListRef, NoteEntry } from './types.js'
+export type { DocxDocument, Block, ParagraphBlock, TableBlock, TableCell, TableRow, TextRun, ImageRun, Run, ComputedStyle, ListRef, NoteEntry, RenderOptions, TabStop } from './types.js'
 export { DocxParseError } from './types.js'
 
 function parsePageSize(xml: string): DocxDocument['pageSize'] {
@@ -165,6 +165,6 @@ async function resolveNotes(
   return entries
 }
 
-export function render(doc: DocxDocument, container: HTMLElement): void {
-  renderHtml(doc, container)
+export function render(doc: DocxDocument, container: HTMLElement, options?: RenderOptions): void {
+  renderHtml(doc, container, options)
 }

@@ -42,6 +42,15 @@ export type TextRun = {
   lineBreak?: boolean   // a w:br (soft line break) — rendered as <br> after the text
   pageBreak?: boolean   // a w:br w:type="page" — splits the paragraph onto a new page (transient marker; never rendered)
   tabs?: number         // count of leading w:tab elements — rendered as spacers
+  deleted?: boolean     // a tracked deletion (w:del/w:delText) — hidden unless showRevisions
+  inserted?: boolean    // a tracked insertion (w:ins) — styled when showRevisions
+}
+
+// Options for rendering a DocxDocument to HTML.
+export type RenderOptions = {
+  // Show tracked changes: deletions struck through, insertions underlined.
+  // Default false = the accepted/final view (deletions removed, insertions kept).
+  showRevisions?: boolean
 }
 
 export type ImageRun = {

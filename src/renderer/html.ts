@@ -1,4 +1,4 @@
-import type { DocxDocument, Block, ParagraphBlock, TableBlock, TextRun, ImageRun, Run, ComputedStyle, NoteEntry, TabStop } from '../types.js'
+import type { DocxDocument, Block, ParagraphBlock, TableBlock, TextRun, ImageRun, Run, ComputedStyle, NoteEntry, TabStop, RenderOptions } from '../types.js'
 import {
   EMPTY_LINE_EM, LINE_HEIGHT,
   extractPageBackground, isBlockVisible, isHeadingBlock, isIconOnly,
@@ -53,6 +53,22 @@ function renderRun(run: Run, parent: HTMLElement, skipLeadingTabs = false): void
   }
 
   const textRun = run as TextRun
+
+  // Tracked deletion: hidden in the accepted/final view; shown struck through
+  // (inside an <del>) when revisions are displayed.
+  if (textRun.deleted) {
+    if (!showRevisions) return
+    const del = document.createElement('del')
+    del.style.cssText = 'color:#c0392b'
+    target.appendChild(del)
+    target = del
+  } else if (textRun.inserted && showRevisions) {
+    // Tracked insertion: underlined and colored when revisions are displayed.
+    const ins = document.createElement('ins')
+    ins.style.cssText = 'color:#1d6f42;text-decoration:underline'
+    target.appendChild(ins)
+    target = ins
+  }
 
   // PAGE field: render the current page number (set per page in renderFooter).
   if (textRun.pageNumber) {
@@ -161,6 +177,11 @@ function sanitizeHref(href: string): string {
 // documents use a normal single line (LINE_HEIGHT) so blank lines don't bloat
 // the page. LINE_HEIGHT and EMPTY_LINE_EM live in ./layout.
 let emptyLineEm = LINE_HEIGHT
+
+// When true, tracked changes are shown (deletions struck through, insertions
+// underlined); when false, the accepted/final view is rendered (deletions
+// removed, insertions kept as plain text). Set per render() from RenderOptions.
+let showRevisions = false
 
 function ensureLineBox(el: HTMLElement): void {
   // Empty runs still create (empty) text nodes, so check for visible content
@@ -673,7 +694,9 @@ function renderPlainPaginated(
   fillTotalPages(container, container.querySelectorAll('.ssd-page').length)
 }
 
-export function render(doc: DocxDocument, container: HTMLElement): void {
+export function render(doc: DocxDocument, container: HTMLElement, options: RenderOptions = {}): void {
+  showRevisions = options.showRevisions ?? false
+
   const hasPageBg = doc.blocks.some(
     b => b.type === 'paragraph' && extractPageBackground(b as ParagraphBlock) !== null,
   )

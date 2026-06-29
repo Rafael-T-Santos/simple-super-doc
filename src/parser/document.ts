@@ -173,8 +173,9 @@ async function parseRun(
     return img
   }
 
-  // Text run
-  const tNode = r.t
+  // Text run. A tracked-deletion run carries its text in <w:delText> instead of
+  // <w:t>, so fall back to it.
+  const tNode = r.t ?? r.delText
   let text = ''
   if (typeof tNode === 'string') {
     text = tNode
@@ -251,15 +252,21 @@ async function parseParagraph(
   // interleaved in document order (recovered from rawXml) so a hyperlink or
   // insertion in the middle of a paragraph isn't reordered to the end. Hyperlink
   // runs carry the resolved href so the renderer can wrap them in <a>.
-  type RunInput = { r: Record<string, unknown>; href?: string }
+  type RunInput = { r: Record<string, unknown>; href?: string; deleted?: boolean; inserted?: boolean }
   const directRuns = (p.r ?? []) as Record<string, unknown>[]
   const insList = (p.ins ?? []) as Record<string, unknown>[]
+  const delList = (p.del ?? []) as Record<string, unknown>[]
   const hyperlinks = (p.hyperlink ?? []) as Record<string, unknown>[]
 
   const insInputs = (ins: Record<string, unknown>): RunInput[] => {
     const inner = ins.r
-    if (Array.isArray(inner)) return inner.map(r => ({ r }))
-    return inner ? [{ r: inner as Record<string, unknown> }] : []
+    if (Array.isArray(inner)) return inner.map(r => ({ r, inserted: true }))
+    return inner ? [{ r: inner as Record<string, unknown>, inserted: true }] : []
+  }
+  const delInputs = (del: Record<string, unknown>): RunInput[] => {
+    const inner = del.r
+    if (Array.isArray(inner)) return inner.map(r => ({ r, deleted: true }))
+    return inner ? [{ r: inner as Record<string, unknown>, deleted: true }] : []
   }
   const hlInputs = (hl: Record<string, unknown>): RunInput[] => {
     const href = resolveHyperlinkHref(hl, ctx)
@@ -271,22 +278,25 @@ async function parseParagraph(
   const order = rawXml ? getRunOrder(rawXml) : []
   // Use the recovered order only if it accounts for every grouped child; else
   // fall back to the safe (append-grouped) order.
-  const counts = { r: 0, hyperlink: 0, ins: 0 }
+  const counts = { r: 0, hyperlink: 0, ins: 0, del: 0 }
   for (const t of order) counts[t]++
   const orderOk = order.length > 0 &&
-    counts.r === directRuns.length && counts.hyperlink === hyperlinks.length && counts.ins === insList.length
+    counts.r === directRuns.length && counts.hyperlink === hyperlinks.length &&
+    counts.ins === insList.length && counts.del === delList.length
 
   const inputs: RunInput[] = []
   if (orderOk) {
-    let ri = 0, hi = 0, ii = 0
+    let ri = 0, hi = 0, ii = 0, di = 0
     for (const t of order) {
       if (t === 'r') inputs.push({ r: directRuns[ri++] })
       else if (t === 'hyperlink') inputs.push(...hlInputs(hyperlinks[hi++]))
-      else inputs.push(...insInputs(insList[ii++]))
+      else if (t === 'ins') inputs.push(...insInputs(insList[ii++]))
+      else inputs.push(...delInputs(delList[di++]))
     }
   } else {
     for (const r of directRuns) inputs.push({ r })
     for (const ins of insList) inputs.push(...insInputs(ins))
+    for (const del of delList) inputs.push(...delInputs(del))
     for (const hl of hyperlinks) inputs.push(...hlInputs(hl))
   }
 
@@ -297,7 +307,7 @@ async function parseParagraph(
   const LIVE_FIELDS = new Set(['PAGE', 'NUMPAGES', 'SECTIONPAGES'])
   const fieldStack: { name: string; inResult: boolean }[] = []
   const runs: Run[] = []
-  for (const { r, href } of inputs) {
+  for (const { r, href, deleted, inserted } of inputs) {
     if ('fldChar' in r) {
       const t = (r.fldChar as Record<string, string>)?.fldCharType
       if (t === 'begin') fieldStack.push({ name: '', inResult: false })
@@ -319,7 +329,11 @@ async function parseParagraph(
     // Suppress the cached result of a live (PAGE/NUMPAGES) field.
     if (fieldStack.some(f => f.inResult && LIVE_FIELDS.has(f.name))) continue
     const run = await parseRun(r, paraStyle, ctx, href)
-    if (run !== null) runs.push(run)
+    if (run !== null) {
+      if (deleted && run.type === 'run') (run as TextRun).deleted = true
+      if (inserted && run.type === 'run') (run as TextRun).inserted = true
+      runs.push(run)
+    }
   }
 
   // An explicit page break (w:br w:type="page") splits the paragraph into
@@ -565,21 +579,22 @@ function extractRowCellInners(tableXml: string): string[][] {
 }
 
 // Document order of a paragraph's content children (runs, hyperlinks, tracked
-// insertions). fast-xml-parser groups these by tag, so a hyperlink/insertion in
-// the MIDDLE of a paragraph would otherwise be reordered to the end.
-function getRunOrder(paraXml: string): Array<'r' | 'hyperlink' | 'ins'> {
+// insertions and deletions). fast-xml-parser groups these by tag, so a
+// hyperlink/insertion/deletion in the MIDDLE of a paragraph would otherwise be
+// reordered to the end.
+function getRunOrder(paraXml: string): Array<'r' | 'hyperlink' | 'ins' | 'del'> {
   let body = paraXml
   const pprEnd = body.indexOf('</w:pPr>')
   if (pprEnd !== -1) body = body.slice(pprEnd + 8) // skip paragraph properties
 
-  const order: Array<'r' | 'hyperlink' | 'ins'> = []
-  const re = /<(\/?)w:(r|hyperlink|ins)[\s>\/]/g
-  let depth = 0    // inside a hyperlink/ins wrapper
-  let inRun = false // inside a <w:r> (skip its rPr-change ins markers)
+  const order: Array<'r' | 'hyperlink' | 'ins' | 'del'> = []
+  const re = /<(\/?)w:(r|hyperlink|ins|del)[\s>\/]/g
+  let depth = 0    // inside a hyperlink/ins/del wrapper
+  let inRun = false // inside a <w:r> (skip its rPr-change ins/del markers)
   let m: RegExpExecArray | null
   while ((m = re.exec(body)) !== null) {
     const isClose = m[1] === '/'
-    const tag = m[2] as 'r' | 'hyperlink' | 'ins'
+    const tag = m[2] as 'r' | 'hyperlink' | 'ins' | 'del'
     if (tag === 'r') {
       if (isClose) inRun = false
       else {
@@ -588,7 +603,7 @@ function getRunOrder(paraXml: string): Array<'r' | 'hyperlink' | 'ins'> {
       }
       continue
     }
-    if (inRun) continue // an <w:ins> inside a run is an rPr change, not content
+    if (inRun) continue // an <w:ins>/<w:del> inside a run is an rPr change, not content
     if (isClose) depth = Math.max(0, depth - 1)
     else {
       if (depth === 0) order.push(tag)
