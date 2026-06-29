@@ -555,6 +555,7 @@ function pageBoxStyle(pw: number, ph: number, pm: PageMargins, extra: string[] =
 // and grouped lists, which a per-block measurement cannot.
 function renderPlainPaginated(
   doc: DocxDocument, container: HTMLElement, pw: number, ph: number, pm: PageMargins,
+  pageOffset = 0,
 ): void {
   const contentW = pw - pm.left - pm.right
   const contentH = ph - pm.top - pm.bottom
@@ -683,14 +684,15 @@ function renderPlainPaginated(
     }
   }
 
-  // Page footer / header (with page numbers) on every page.
+  // Page footer / header (with page numbers) on every page. pageOffset
+  // continues the page count across earlier sections.
   const footerPx = doc.pageSize?.footerPx ?? Math.round(pm.bottom / 2)
-  pages.forEach((page, i) => renderFooter(doc, page, i + 1, pm, footerPx))
+  pages.forEach((page, i) => renderFooter(doc, page, pageOffset + i + 1, pm, footerPx))
   const headerPx = doc.pageSize?.headerPx ?? Math.round(pm.top / 2)
-  pages.forEach((page, i) => renderHeader(doc, page, i + 1, pm, headerPx))
+  pages.forEach((page, i) => renderHeader(doc, page, pageOffset + i + 1, pm, headerPx))
 
-  // NUMPAGES = total rendered pages (body + any endnote page), filled now that
-  // pagination is final.
+  // NUMPAGES = total rendered pages so far across all sections, filled now that
+  // this section's pagination is final (the last section sets the true total).
   fillTotalPages(container, container.querySelectorAll('.ssd-page').length)
 }
 
@@ -710,6 +712,28 @@ export function render(doc: DocxDocument, container: HTMLElement, options: Rende
     renderBlocks(doc.blocks, container)
     renderNotes(doc, container)
     fillTotalPages(container, 1)
+    return
+  }
+
+  // Multi-section plain documents: paginate each section with its own page size
+  // (e.g. a landscape table page between portrait pages), concatenating pages
+  // and continuing the page count. Endnotes go on the final section's last page;
+  // footnotes render in whichever section references them.
+  if (!hasPageBg && doc.sections && doc.sections.length > 1) {
+    const lastIdx = doc.sections.length - 1
+    doc.sections.forEach((section, i) => {
+      const sp = section.pageSize
+      const subDoc: DocxDocument = {
+        blocks: section.blocks,
+        pageSize: sp,
+        footnotes: doc.footnotes,
+        endnotes: i === lastIdx ? doc.endnotes : undefined,
+        footer: doc.footer,
+        header: doc.header,
+      }
+      const pageOffset = container.querySelectorAll('.ssd-page').length
+      renderPlainPaginated(subDoc, container, sp.widthPx, sp.heightPx, sp.marginPx, pageOffset)
+    })
     return
   }
 

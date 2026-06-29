@@ -1,24 +1,29 @@
 import JSZip from 'jszip'
-import { DocxParseError, type DocxDocument, type NoteEntry, type RenderOptions } from './types.js'
+import { DocxParseError, type DocxDocument, type NoteEntry, type RenderOptions, type Section, type Block, type ParagraphBlock, type PageSize } from './types.js'
 import { parseRelationships } from './parser/relationships.js'
 import { parseStyles } from './parser/styles.js'
 import { parseNumbering, emptyNumbering } from './parser/numbering.js'
 import { parseDocument, parseNotesXml, parseFooterXml, parseHeaderXml, type ParseContext } from './parser/document.js'
 import { render as renderHtml } from './renderer/html.js'
 
-export type { DocxDocument, Block, ParagraphBlock, TableBlock, TableCell, TableRow, TextRun, ImageRun, Run, ComputedStyle, ListRef, NoteEntry, RenderOptions, TabStop } from './types.js'
+export type { DocxDocument, Block, ParagraphBlock, TableBlock, TableCell, TableRow, TextRun, ImageRun, Run, ComputedStyle, ListRef, NoteEntry, RenderOptions, TabStop, Section, PageSize } from './types.js'
 export { DocxParseError } from './types.js'
 
 function parsePageSize(xml: string): DocxDocument['pageSize'] {
   const twipsToPx = (s: string) => Math.round(parseFloat(s) * 96 / 1440)
-  const pgSz = /<w:pgSz\b([^/]*)\/?>/.exec(xml)
+  // Use the LAST section's sectPr — the body-level <w:sectPr> (textually last),
+  // which describes the final/only section. Earlier sectPrs sit in paragraph
+  // pPr and describe earlier sections (handled per-section via doc.sections).
+  const lastSect = xml.lastIndexOf('<w:sectPr')
+  const scope = lastSect !== -1 ? xml.slice(lastSect) : xml
+  const pgSz = /<w:pgSz\b([^/]*)\/?>/.exec(scope) ?? /<w:pgSz\b([^/]*)\/?>/.exec(xml)
   if (!pgSz) return undefined
   const attrs = pgSz[1]
   const w = /\bw:w="([\d.]+)"/.exec(attrs)?.[1]
   const h = /\bw:h="([\d.]+)"/.exec(attrs)?.[1]
   if (!w || !h) return undefined
 
-  const pgMar = /<w:pgMar\b([^/]*)\/?>/.exec(xml)
+  const pgMar = /<w:pgMar\b([^/]*)\/?>/.exec(scope) ?? /<w:pgMar\b([^/]*)\/?>/.exec(xml)
   const ma = pgMar?.[1] ?? ''
   const top    = /\bw:top="([\d.]+)"/.exec(ma)?.[1]    ?? '1440'
   const right  = /\bw:right="([\d.]+)"/.exec(ma)?.[1]  ?? '1440'
@@ -97,14 +102,38 @@ export async function parse(buffer: ArrayBuffer): Promise<DocxDocument> {
   const footer = await resolveFooter(documentXml, relationshipMap, zip, ctx)
   const header = await resolveHeader(documentXml, relationshipMap, zip, ctx)
 
+  const pageSize = parsePageSize(documentXml)
+  const sections = pageSize ? buildSections(blocks, pageSize) : []
+
   return {
     blocks,
-    pageSize: parsePageSize(documentXml),
+    pageSize,
     ...(footnotes.length ? { footnotes } : {}),
     ...(endnotes.length ? { endnotes } : {}),
     ...(footer && footer.length ? { footer } : {}),
     ...(header && header.length ? { header } : {}),
+    ...(sections.length > 1 ? { sections } : {}),
   }
+}
+
+// Split the flat block list into sections at paragraphs tagged with a
+// sectionPageSize (a w:sectPr in their pPr). The trailing run of blocks forms
+// the final section, sized by the body-level sectPr (bodyPageSize). The tag is
+// transient and stripped here. Returns one section for a single-section doc.
+function buildSections(blocks: Block[], bodyPageSize: PageSize): Section[] {
+  const sections: Section[] = []
+  let cur: Block[] = []
+  for (const b of blocks) {
+    cur.push(b)
+    const tagged = b.type === 'paragraph' ? (b as ParagraphBlock).sectionPageSize : undefined
+    if (tagged) {
+      sections.push({ blocks: cur, pageSize: tagged })
+      delete (b as ParagraphBlock).sectionPageSize
+      cur = []
+    }
+  }
+  if (cur.length) sections.push({ blocks: cur, pageSize: bodyPageSize })
+  return sections
 }
 
 async function resolveFooter(

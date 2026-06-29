@@ -11,6 +11,18 @@ export type DocxDocument = {
   endnotes?: NoteEntry[]   // referenced endnotes, in document order (number 1..n)
   footer?: Block[]         // default page footer (w:footerReference); PAGE fields become page numbers
   header?: Block[]         // default page header (w:headerReference); PAGE fields become page numbers
+  // Document sections, each with its own page size/orientation (w:sectPr).
+  // Present only when the document has MORE THAN ONE section; a single-section
+  // document uses `blocks` + `pageSize` directly. blocks[] across sections
+  // concatenate to `blocks`.
+  sections?: Section[]
+}
+
+export type PageSize = NonNullable<DocxDocument['pageSize']>
+
+export type Section = {
+  blocks: Block[]
+  pageSize: PageSize
 }
 
 // A footnote/endnote's resolved content. number matches the in-text marker.
@@ -27,6 +39,10 @@ export type ParagraphBlock = {
   runs: Run[]
   list?: ListRef
   pageBreakBefore?: boolean  // w:pageBreakBefore — forces a new page in paginated render
+  // Transient: set on the LAST paragraph of a section (its pPr held a w:sectPr)
+  // to that section's page size. Consumed when building DocxDocument.sections;
+  // stripped before the document is returned.
+  sectionPageSize?: PageSize
 }
 
 export type Run = TextRun | ImageRun

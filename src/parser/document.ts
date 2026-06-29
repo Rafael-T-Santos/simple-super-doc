@@ -2,7 +2,7 @@ import { XMLParser } from 'fast-xml-parser'
 import type JSZip from 'jszip'
 import type {
   Block, ParagraphBlock, TableBlock, TableCell, TableRow,
-  TextRun, ImageRun, Run, ComputedStyle, ListRef,
+  TextRun, ImageRun, Run, ComputedStyle, ListRef, PageSize,
 } from '../types.js'
 import type { StyleMap } from './styles.js'
 import { extractRPr, extractPPr, extractMarkRPr } from './styles.js'
@@ -361,7 +361,16 @@ async function parseParagraph(
     }
   }
 
-  return segments.map((seg, i) => makeBlock(seg, i === 0 ? pageBreakBefore : true))
+  const blocks = segments.map((seg, i) => makeBlock(seg, i === 0 ? pageBreakBefore : true))
+
+  // A section break: this paragraph's pPr carried a w:sectPr, so it is the LAST
+  // paragraph of a section. Tag the last block with that section's page size so
+  // the document can be split into sections (see buildSections).
+  const sectPr = pPr?.sectPr as Record<string, unknown> | undefined
+  const sectionPageSize = pageSizeFromSectPr(sectPr)
+  if (sectionPageSize) blocks[blocks.length - 1].sectionPageSize = sectionPageSize
+
+  return blocks
 }
 
 async function parseTable(
@@ -453,6 +462,30 @@ async function parseTable(
     ...(columnWidths.some(w => w > 0) ? { columnWidths } : {}),
     ...(cellPadding ? { cellPadding } : {}),
   }
+}
+
+// Page size/margins from a parsed <w:sectPr> object (pgSz + pgMar), in px.
+// Mirrors index.ts parsePageSize but works on the already-parsed object so a
+// per-section sectPr in a paragraph's pPr can be read. Returns undefined when
+// there is no pgSz (e.g. a section that only changes columns).
+function pageSizeFromSectPr(sectPr: Record<string, unknown> | undefined): PageSize | undefined {
+  if (!sectPr) return undefined
+  const twips = (v: unknown): number => Math.round((parseFloat(String(v)) * 96) / 1440)
+  const pgSz = sectPr.pgSz as Record<string, string> | undefined
+  if (!pgSz || pgSz.w == null || pgSz.h == null) return undefined
+  const pgMar = (sectPr.pgMar ?? {}) as Record<string, string>
+  const m = (v: string | undefined, d: number) => (v != null ? twips(v) : d)
+  const size: PageSize = {
+    widthPx: twips(pgSz.w),
+    heightPx: twips(pgSz.h),
+    marginPx: {
+      top: m(pgMar.top, 96), right: m(pgMar.right, 96),
+      bottom: m(pgMar.bottom, 96), left: m(pgMar.left, 96),
+    },
+  }
+  if (pgMar.footer != null) size.footerPx = twips(pgMar.footer)
+  if (pgMar.header != null) size.headerPx = twips(pgMar.header)
+  return size
 }
 
 // Convert an OOXML margin node (top/right/bottom/left with w:w in twips) to px.
