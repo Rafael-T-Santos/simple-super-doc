@@ -30,6 +30,10 @@ export async function resolveImage(
 
   if (!rel.type.includes('image')) return null
 
+  // External (linked) image: the relationship target is a URL, not a zip entry.
+  // Hand the URL straight to the <img> so the picture is not lost.
+  if (/^https?:\/\//i.test(rel.target)) return { src: rel.target }
+
   const ext = rel.target.split('.').pop()?.toLowerCase() ?? ''
   if (SKIP_EXTS.has(ext)) return null
 

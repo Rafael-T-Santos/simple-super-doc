@@ -175,6 +175,29 @@ async function parseRun(
     return img
   }
 
+  // VML image: <w:pict><v:shape style="width:..pt;height:..pt"><v:imagedata
+  // r:id="..."/></v:shape></w:pict>. The legacy image form (older Word, some
+  // producers). A pict with no imagedata is a VML text box — its text is
+  // recovered separately (collectTxbxContent), so this run renders nothing.
+  if ('pict' in r) {
+    const vml = findVmlImage(r.pict)
+    if (vml) {
+      const resolved = await resolveImage(vml.id, ctx.relationshipMap, ctx.zip)
+      if (resolved) {
+        const ptToPx = (pt: string | undefined): number =>
+          pt ? Math.round((parseFloat(pt) * 96) / 72) : 0
+        return {
+          type: 'image',
+          src: resolved.src,
+          widthPx: ptToPx(/width:([\d.]+)pt/.exec(vml.style ?? '')?.[1]),
+          heightPx: ptToPx(/height:([\d.]+)pt/.exec(vml.style ?? '')?.[1]),
+          ...(href ? { href } : {}),
+        }
+      }
+    }
+    return null
+  }
+
   // Text run. A tracked-deletion run carries its text in <w:delText> instead of
   // <w:t>, so fall back to it.
   const tNode = r.t ?? r.delText
@@ -221,11 +244,37 @@ function resolveHyperlinkHref(
 function findBlipEmbed(node: unknown): string | undefined {
   if (!node || typeof node !== 'object') return undefined
   const obj = node as Record<string, unknown>
+  // a:blip carries r:embed (packaged image) or r:link (external/linked image).
   if ('embed' in obj && typeof obj.embed === 'string') return obj.embed
+  if ('link' in obj && typeof obj.link === 'string') return obj.link
   for (const v of Object.values(obj)) {
     const found = findBlipEmbed(v)
     if (found) return found
   }
+  return undefined
+}
+
+// Find a VML image: a <v:imagedata r:id="..."/> anywhere under a <w:pict>,
+// returning its relationship id and the carrying <v:shape>'s style (which holds
+// the width/height, e.g. "width:150pt;height:120pt"). A pict with no imagedata
+// (a VML text box, handled separately) yields undefined.
+function findVmlImage(node: unknown): { id: string; style?: string } | undefined {
+  if (!node || typeof node !== 'object') return undefined
+  if (Array.isArray(node)) {
+    for (const x of node) { const f = findVmlImage(x); if (f) return f }
+    return undefined
+  }
+  const obj = node as Record<string, unknown>
+  if ('imagedata' in obj) {
+    const imgs = (Array.isArray(obj.imagedata) ? obj.imagedata : [obj.imagedata]) as Record<string, string>[]
+    for (const im of imgs) {
+      // The parser's isArray covers 'style' (for <w:style>), so the v:shape's
+      // style ATTRIBUTE arrives wrapped in an array — unwrap it.
+      const styleRaw = Array.isArray(obj.style) ? obj.style[0] : obj.style
+      if (im?.id) return { id: im.id, style: typeof styleRaw === 'string' ? styleRaw : undefined }
+    }
+  }
+  for (const v of Object.values(obj)) { const f = findVmlImage(v); if (f) return f }
   return undefined
 }
 
