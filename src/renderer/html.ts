@@ -677,6 +677,24 @@ export function render(doc: DocxDocument, container: HTMLElement): void {
     if (hasPageBg) for (const wm of watermarksOf(block, pw, ph)) pageWatermarks[blockPage[i]].push(wm)
   }
 
+  // A frame watermark belongs to its whole background region, not just the page
+  // its anchor landed on. Map each background to its watermark and apply it to
+  // every page with that background, so a foreground frame consistently covers
+  // the background (e.g. a "clean" frame hiding a logo baked into the bg image).
+  const wmForBg = new Map<string, ImageRun>()
+  for (let p = 0; p < totalPages; p++) {
+    const bgSrc = pageBg[p]?.src ?? ''
+    for (const wm of pageWatermarks[p]) if (!wmForBg.has(bgSrc)) wmForBg.set(bgSrc, wm)
+  }
+  for (let p = 0; p < totalPages; p++) {
+    const wm = wmForBg.get(pageBg[p]?.src ?? '')
+    pageWatermarks[p] = wm ? [wm] : []
+    // When a foreground frame (watermark) covers a page, it is the visible
+    // frame; drop the behindDoc background (white shows through) so anything
+    // baked into that bg — e.g. a logo — doesn't appear behind the clean frame.
+    if (wm) pageBg[p] = null
+  }
+
   // Footnotes/endnotes get their own final page so they appear at the end of the
   // document inside a page box like everything else.
   const notePage = document.createElement('div')
@@ -753,12 +771,13 @@ export function render(doc: DocxDocument, container: HTMLElement): void {
     if (bgImg) extra.push(`background-image:url('${bgImg.src}')`)
     div.style.cssText = pageBoxCss(extra)
 
-    // Watermark overlays: absolutely positioned behind the text layer.
+    // Watermark overlays: absolutely positioned behind the text layer. object-fit
+    // fill makes the frame cover the page exactly (and hide anything in the bg).
     for (const wm of pageWatermarks[p]) {
       const img = document.createElement('img')
       img.src = wm.src
       img.style.cssText =
-        'position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain;z-index:0;pointer-events:none'
+        'position:absolute;top:0;left:0;width:100%;height:100%;object-fit:fill;z-index:0;pointer-events:none'
       div.appendChild(img)
     }
 
