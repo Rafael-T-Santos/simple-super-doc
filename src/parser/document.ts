@@ -337,22 +337,30 @@ async function parseParagraph(
     }
     const r = inp.r as Record<string, unknown>
     const { href, deleted, inserted } = inp
-    if ('fldChar' in r) {
-      const t = (r.fldChar as Record<string, string>)?.fldCharType
-      if (t === 'begin') fieldStack.push({ name: '', inResult: false })
-      else if (t === 'separate') { if (fieldStack.length) fieldStack[fieldStack.length - 1].inResult = true }
-      else if (t === 'end') fieldStack.pop()
-      continue
-    }
-    if ('instrText' in r) {
-      const instr = (typeof r.instrText === 'object' && r.instrText !== null
-        ? String((r.instrText as Record<string, string>)['#text'] ?? '')
-        : String(r.instrText)).trim().toUpperCase()
-      const field = instr.split(/\s+/)[0]
-      if (fieldStack.length) fieldStack[fieldStack.length - 1].name = field
-      const mStyle = Object.assign({}, paraStyle, extractRPr(r.rPr as Record<string, unknown> | undefined))
-      if (field === 'PAGE') runs.push({ type: 'run', text: '', style: mStyle, pageNumber: true })
-      else if (field === 'NUMPAGES' || field === 'SECTIONPAGES') runs.push({ type: 'run', text: '', style: mStyle, totalPages: true })
+
+    // Field components may be split one-per-run (begin | code | separate | result
+    // | end) OR packed into a SINGLE run — Google Docs exports the whole field in
+    // one <w:r> (begin + instrText + separate + end together), which makes
+    // r.fldChar an array. Process a run's field parts in canonical order
+    // (begin → code → separate → end) so both layouts resolve the same.
+    const fldChars = ('fldChar' in r)
+      ? (Array.isArray(r.fldChar) ? r.fldChar : [r.fldChar]) as Record<string, string>[]
+      : []
+    const hasInstr = 'instrText' in r
+    if (fldChars.length || hasInstr) {
+      for (const fc of fldChars) if (fc?.fldCharType === 'begin') fieldStack.push({ name: '', inResult: false })
+      if (hasInstr) {
+        const instr = (typeof r.instrText === 'object' && r.instrText !== null
+          ? String((r.instrText as Record<string, string>)['#text'] ?? '')
+          : String(r.instrText)).trim().toUpperCase()
+        const field = instr.split(/\s+/)[0]
+        if (fieldStack.length) fieldStack[fieldStack.length - 1].name = field
+        const mStyle = Object.assign({}, paraStyle, extractRPr(r.rPr as Record<string, unknown> | undefined))
+        if (field === 'PAGE') runs.push({ type: 'run', text: '', style: mStyle, pageNumber: true })
+        else if (field === 'NUMPAGES' || field === 'SECTIONPAGES') runs.push({ type: 'run', text: '', style: mStyle, totalPages: true })
+      }
+      for (const fc of fldChars) if (fc?.fldCharType === 'separate') { if (fieldStack.length) fieldStack[fieldStack.length - 1].inResult = true }
+      for (const fc of fldChars) if (fc?.fldCharType === 'end') fieldStack.pop()
       continue
     }
     // Suppress the cached result of a live (PAGE/NUMPAGES) field.

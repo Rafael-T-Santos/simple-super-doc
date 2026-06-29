@@ -88,6 +88,36 @@ describe('field codes', () => {
 const fldSimple = (instr: string, cached = '') =>
   `<w:fldSimple w:instr=" ${instr} ">` + (cached ? `<w:r><w:t>${cached}</w:t></w:r>` : '') + `</w:fldSimple>`
 
+// Google Docs export style: the ENTIRE field (begin, code, separate, end) lives
+// in a SINGLE <w:r>, so the parser sees r.fldChar as an array.
+const singleRunField = (code: string) =>
+  `<w:r><w:fldChar w:fldCharType="begin"/><w:instrText xml:space="preserve">${code}</w:instrText>` +
+  `<w:fldChar w:fldCharType="separate"/><w:fldChar w:fldCharType="end"/></w:r>`
+
+describe('single-run fields (Google Docs export)', () => {
+  it('resolves a PAGE field packed into one run', async () => {
+    const doc = await parse(await buildDocx(`<w:p>${singleRunField('PAGE')}</w:p>`))
+    const p = doc.blocks[0] as ParagraphBlock
+    expect(p.runs.some(r => (r as TextRun).pageNumber)).toBe(true)
+  })
+
+  it('resolves a NUMPAGES field packed into one run', async () => {
+    const doc = await parse(await buildDocx(`<w:p>${singleRunField('NUMPAGES')}</w:p>`))
+    const p = doc.blocks[0] as ParagraphBlock
+    expect(p.runs.some(r => (r as TextRun).totalPages)).toBe(true)
+  })
+
+  it('keeps surrounding text — the "Page X" footer pattern', async () => {
+    const body = `<w:p><w:r><w:t xml:space="preserve">Page </w:t></w:r>${singleRunField('PAGE')}</w:p>`
+    const doc = await parse(await buildDocx(body))
+    const runs = (doc.blocks[0] as ParagraphBlock).runs as TextRun[]
+    expect(runs.map(r => r.text).join('')).toContain('Page ')
+    const textIdx = runs.findIndex(r => r.text === 'Page ')
+    const pageIdx = runs.findIndex(r => r.pageNumber)
+    expect(pageIdx).toBeGreaterThan(textIdx)
+  })
+})
+
 describe('fldSimple (compact fields)', () => {
   it('PAGE resolves to a live page-number marker and suppresses the cached value', async () => {
     const doc = await parse(await buildDocx(`<w:p>${fldSimple('PAGE \\* MERGEFORMAT', '7')}</w:p>`))
