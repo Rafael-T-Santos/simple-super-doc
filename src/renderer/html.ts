@@ -703,25 +703,51 @@ export function render(doc: DocxDocument, container: HTMLElement, options: Rende
     b => b.type === 'paragraph' && extractPageBackground(b as ParagraphBlock) !== null,
   )
 
-  // Template covers rely on tall empty spacer lines; plain documents must not.
-  emptyLineEm = hasPageBg ? EMPTY_LINE_EM : LINE_HEIGHT
-
   const ps = doc.pageSize
   // Without a page size we can't lay out pages — fall back to continuous flow.
   if (!ps || ps.widthPx === 0 || ps.heightPx === 0) {
+    // Template covers rely on tall empty spacer lines; plain documents must not.
+    emptyLineEm = hasPageBg ? EMPTY_LINE_EM : LINE_HEIGHT
     renderBlocks(doc.blocks, container)
     renderNotes(doc, container)
     fillTotalPages(container, 1)
     return
   }
 
-  // Multi-section plain documents: paginate each section with its own page size
-  // (e.g. a landscape table page between portrait pages), concatenating pages
-  // and continuing the page count. Endnotes go on the final section's last page;
-  // footnotes render in whichever section references them.
-  if (!hasPageBg && doc.sections && doc.sections.length > 1) {
-    const lastIdx = doc.sections.length - 1
-    doc.sections.forEach((section, i) => {
+  // Multi-section documents: render each section with its own page size, routing
+  // each to the plain or page-background path by its own content (see
+  // renderSections). This covers both plain multi-section docs and template
+  // documents that mix page sizes/orientations across sections.
+  if (doc.sections && doc.sections.length > 1) {
+    renderSections(doc, container, hasPageBg)
+    return
+  }
+
+  // Template covers rely on tall empty spacer lines; plain documents must not.
+  emptyLineEm = hasPageBg ? EMPTY_LINE_EM : LINE_HEIGHT
+
+  // Plain documents: exact flow-based pagination into white page boxes.
+  if (!hasPageBg) {
+    renderPlainPaginated(doc, container, ps.widthPx, ps.heightPx, ps.marginPx)
+    return
+  }
+
+  // Single-section template document with a full-page background.
+  renderPageBgPaginated(doc, container)
+}
+
+// Render a multi-section document. Each section paginates with its own page size
+// and orientation; page boxes concatenate and the page count continues across
+// sections.
+function renderSections(doc: DocxDocument, container: HTMLElement, docHasPageBg: boolean): void {
+  const sections = doc.sections!
+  const lastIdx = sections.length - 1
+
+  // No section uses a full-page background: the plain multi-section path. Each
+  // section renders the footnotes it references; endnotes go on the last section.
+  if (!docHasPageBg) {
+    emptyLineEm = LINE_HEIGHT
+    sections.forEach((section, i) => {
       const sp = section.pageSize
       const subDoc: DocxDocument = {
         blocks: section.blocks,
@@ -737,12 +763,60 @@ export function render(doc: DocxDocument, container: HTMLElement, options: Rende
     return
   }
 
-  // Plain documents: exact flow-based pagination into white page boxes.
-  if (!hasPageBg) {
-    renderPlainPaginated(doc, container, ps.widthPx, ps.heightPx, ps.marginPx)
-    return
+  // At least one section has a full-page background. Route each section by ITS
+  // OWN content (a plain section between template sections still paginates as a
+  // plain flow), then render all notes once on a final notes page — template
+  // documents don't use per-page footnotes.
+  for (const section of sections) {
+    const sp = section.pageSize
+    const sectionHasBg = section.blocks.some(
+      b => b.type === 'paragraph' && extractPageBackground(b as ParagraphBlock) !== null,
+    )
+    emptyLineEm = sectionHasBg ? EMPTY_LINE_EM : LINE_HEIGHT
+    const subDoc: DocxDocument = {
+      blocks: section.blocks,
+      pageSize: sp,
+      footer: section.footer ?? doc.footer,
+      header: section.header ?? doc.header,
+    }
+    if (sectionHasBg) {
+      renderPageBgPaginated(subDoc, container)
+    } else {
+      const pageOffset = container.querySelectorAll('.ssd-page').length
+      renderPlainPaginated(subDoc, container, sp.widthPx, sp.heightPx, sp.marginPx, pageOffset)
+    }
   }
 
+  appendNotesPage(doc, container)
+  fillTotalPages(container, container.querySelectorAll('.ssd-page').length)
+}
+
+// Append a final page box holding all footnotes and endnotes. Used by the
+// combined multi-section + template path, where per-page footnotes don't apply.
+function appendNotesPage(doc: DocxDocument, container: HTMLElement): void {
+  const host = document.createElement('div')
+  renderNotes(doc, host)
+  if (host.childNodes.length === 0) return
+  const ps = doc.pageSize!
+  const pm = ps.marginPx
+  const div = document.createElement('div')
+  div.className = 'ssd-page'
+  div.style.cssText = [
+    'position:relative', 'box-sizing:border-box', 'background-color:#fff',
+    'margin:0 auto 16px', 'box-shadow:0 2px 12px rgba(0,0,0,.25)',
+    `width:${ps.widthPx}px`, `min-height:${ps.heightPx}px`,
+    `padding:${pm.top}px ${pm.right}px ${pm.bottom}px ${pm.left}px`,
+  ].join(';')
+  while (host.firstChild) div.appendChild(host.firstChild)
+  container.appendChild(div)
+}
+
+// Render a single-section template document with full-page background images
+// (covers, framed body pages, closing slides). A two-pass DOM measurement plus
+// heuristics reconstruct the pages; see src/renderer/layout.ts.
+function renderPageBgPaginated(doc: DocxDocument, container: HTMLElement): void {
+  const hasPageBg = true
+  const ps = doc.pageSize!
   const pw = ps.widthPx
   const ph = ps.heightPx
   const pm = ps.marginPx
