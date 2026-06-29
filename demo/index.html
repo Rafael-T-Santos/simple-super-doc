@@ -186,6 +186,11 @@
 
     irCheck.addEventListener('change', () => {
       irPanel.classList.toggle('visible', irCheck.checked)
+      // Populate from the already-loaded document when toggled on (the panel was
+      // otherwise empty when checked after loading a file).
+      if (irCheck.checked && lastDoc) {
+        irPanel.textContent = JSON.stringify(lastDoc, null, 2)
+      }
     })
 
     dropZone.addEventListener('click', () => fileInput.click())
@@ -221,9 +226,8 @@
         status.className = 'ok'
         status.textContent = `Rendered — ${doc.blocks.length} blocks`
 
-        if (irCheck.checked) {
-          irPanel.textContent = JSON.stringify(doc, null, 2)
-        }
+        // Always populate the IR panel so toggling the checkbox is instant.
+        irPanel.textContent = JSON.stringify(doc, null, 2)
       } catch (err) {
         status.className = 'error'
         status.textContent = err.message || String(err)

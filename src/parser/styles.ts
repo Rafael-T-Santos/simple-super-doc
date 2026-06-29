@@ -79,15 +79,15 @@ export function extractPPr(pPr: Record<string, unknown> | undefined): Partial<Co
   if (!pPr) return {}
   const s: Partial<ComputedStyle> = {}
 
-  // alignment
+  // alignment. OOXML uses w:val="both" (and "distribute") for justified text,
+  // not "justify"; "end"/"start" are the bidi-aware right/left.
   if ('jc' in pPr) {
     const jc = pPr.jc as Record<string, string>
     const val = typeof jc === 'object' && jc !== null ? jc.val : String(jc)
-    if (val === 'center' || val === 'right' || val === 'justify') {
-      s.alignment = val
-    } else {
-      s.alignment = 'left'
-    }
+    if (val === 'center') s.alignment = 'center'
+    else if (val === 'right' || val === 'end') s.alignment = 'right'
+    else if (val === 'both' || val === 'distribute' || val === 'justify') s.alignment = 'justify'
+    else s.alignment = 'left'
   }
 
   // paragraph borders (w:pBdr): top/bottom/left/right with sz (eighths of a pt),
