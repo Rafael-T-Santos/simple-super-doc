@@ -353,8 +353,24 @@ async function parseParagraph(
 async function parseTable(
   tbl: Record<string, unknown>,
   ctx: ParseContext,
+  rawTableXml?: string,
 ): Promise<TableBlock> {
   const rows = (tbl.tr ?? []) as Record<string, unknown>[]
+
+  // Map each cell node to its raw inner XML so cell paragraphs can recover run
+  // order (a mid-cell hyperlink/insertion) like body paragraphs do. Built only
+  // when the row/cell counts align with the parsed grid (else fall back safely).
+  const tcXmlMap = new Map<Record<string, unknown>, string>()
+  if (rawTableXml) {
+    const cellInners = extractRowCellInners(rawTableXml)
+    for (let ri = 0; ri < rows.length; ri++) {
+      const cells = (rows[ri].tc ?? []) as Record<string, unknown>[]
+      const rawRowInners = cellInners[ri]
+      if (rawRowInners && rawRowInners.length === cells.length) {
+        for (let ci = 0; ci < cells.length; ci++) tcXmlMap.set(cells[ci], rawRowInners[ci])
+      }
+    }
+  }
 
   // Pass 1: collect raw cells
   const rawGrid: RawCell[][] = []
@@ -388,7 +404,11 @@ async function parseTable(
     const irCells: TableCell[] = []
     for (const cell of resolvedRow) {
       const tc = cell.rawData as Record<string, unknown>
-      const cellBlocks = await parseBlockContainer(tc, ctx)
+      const cellXml = tcXmlMap.get(tc)
+      const cellOrder = cellXml ? blockOrderOf(cellXml) : undefined
+      const cellParaXmls = cellXml ? paragraphChunksOf(cellXml) : undefined
+      const cellTableXmls = cellXml ? tableChunksOf(cellXml) : undefined
+      const cellBlocks = await parseBlockContainer(tc, ctx, cellOrder, cellParaXmls, cellTableXmls)
       const irCell: TableCell = { rowSpan: cell.rowSpan, colSpan: cell.colSpan, blocks: cellBlocks }
       if (cell.backgroundColor) irCell.backgroundColor = cell.backgroundColor
       irCells.push(irCell)
@@ -433,21 +453,25 @@ function marginToPx(
   return { top: side(node.top), right: side(node.right), bottom: side(node.bottom), left: side(node.left) }
 }
 
-// Raw XML of each top-level (non-table-nested) paragraph, in document order.
-// Used to recover run order within a paragraph (see getRunOrder); aligns 1:1
-// with the parser's grouped body.p[] array.
-function extractParagraphChunks(xml: string): string[] {
+// Inner XML of <w:body> (between its tags), or '' if absent.
+function bodyInner(xml: string): string {
   const bodyStart = xml.indexOf('<w:body>')
   const bodyEnd = xml.lastIndexOf('</w:body>')
-  if (bodyStart === -1 || bodyEnd === -1) return []
-  const body = xml.slice(bodyStart + 8, bodyEnd)
+  if (bodyStart === -1 || bodyEnd === -1) return ''
+  return xml.slice(bodyStart + 8, bodyEnd)
+}
 
+// Raw XML of each direct-child paragraph of a container's inner XML (paragraphs
+// nested inside a table are skipped), in document order. Aligns 1:1 with the
+// parser's grouped container.p[] array. Used to recover intra-paragraph run
+// order (see getRunOrder) for the body AND for table cells.
+function paragraphChunksOf(inner: string): string[] {
   const chunks: string[] = []
   const re = /<(\/?)w:(p|tbl)[\s>\/]/g
   let tblDepth = 0
   let pStart = -1
   let m: RegExpExecArray | null
-  while ((m = re.exec(body)) !== null) {
+  while ((m = re.exec(inner)) !== null) {
     const isClose = m[1] === '/'
     const tag = m[2]
     if (tag === 'tbl') {
@@ -455,18 +479,89 @@ function extractParagraphChunks(xml: string): string[] {
       else tblDepth++
       continue
     }
-    if (tblDepth !== 0) continue // paragraph inside a table — not top-level
+    if (tblDepth !== 0) continue // paragraph inside a nested table — not direct
     if (!isClose) {
-      const gt = body.indexOf('>', m.index)
-      if (gt > 0 && body[gt - 1] === '/') chunks.push(body.slice(m.index, gt + 1)) // <w:p/>
+      const gt = inner.indexOf('>', m.index)
+      if (gt > 0 && inner[gt - 1] === '/') chunks.push(inner.slice(m.index, gt + 1)) // <w:p/>
       else if (pStart === -1) pStart = m.index
     } else if (pStart !== -1) {
-      const gt = body.indexOf('>', m.index)
-      chunks.push(body.slice(pStart, gt + 1))
+      const gt = inner.indexOf('>', m.index)
+      chunks.push(inner.slice(pStart, gt + 1))
       pStart = -1
     }
   }
   return chunks
+}
+
+function extractParagraphChunks(xml: string): string[] {
+  return paragraphChunksOf(bodyInner(xml))
+}
+
+// Raw XML of each direct-child table of a container's inner XML, in document
+// order. Nested tables are part of their parent cell's XML, so this aligns 1:1
+// with the parser's grouped container.tbl[] array (body or a cell).
+function tableChunksOf(inner: string): string[] {
+  const chunks: string[] = []
+  const re = /<(\/?)w:tbl[\s>\/]/g
+  let tblDepth = 0
+  let start = -1
+  let m: RegExpExecArray | null
+  while ((m = re.exec(inner)) !== null) {
+    const isClose = m[1] === '/'
+    if (!isClose) {
+      if (tblDepth === 0) start = m.index
+      tblDepth++
+    } else {
+      tblDepth = Math.max(0, tblDepth - 1)
+      if (tblDepth === 0 && start !== -1) {
+        const gt = inner.indexOf('>', m.index)
+        chunks.push(inner.slice(start, gt + 1))
+        start = -1
+      }
+    }
+  }
+  return chunks
+}
+
+function extractTableChunks(xml: string): string[] {
+  return tableChunksOf(bodyInner(xml))
+}
+
+// Inner XML of each direct cell of a table, grouped by row. Only the outer
+// table's rows/cells are captured (nested tables stay inside their cell's XML),
+// so the result aligns 1:1 with the parser's tbl.tr[].tc[]. Lets cell paragraphs
+// recover their run order just like body paragraphs.
+function extractRowCellInners(tableXml: string): string[][] {
+  const rows: string[][] = []
+  let tblDepth = 0
+  let curRow: string[] | null = null
+  let tcStart = -1
+  const re = /<(\/?)w:(tbl|tr|tc)[\s>\/]/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(tableXml)) !== null) {
+    const isClose = m[1] === '/'
+    const tag = m[2]
+    if (tag === 'tbl') {
+      if (isClose) tblDepth = Math.max(0, tblDepth - 1)
+      else tblDepth++
+      continue
+    }
+    if (tblDepth !== 1) continue // only the outer table delimits rows/cells
+    if (tag === 'tr') {
+      if (isClose) { if (curRow) { rows.push(curRow); curRow = null } }
+      else curRow = []
+      continue
+    }
+    // tag === 'tc'
+    if (isClose) {
+      if (curRow && tcStart !== -1) { curRow.push(tableXml.slice(tcStart, m.index)); tcStart = -1 }
+    } else {
+      const gt = tableXml.indexOf('>', m.index)
+      if (gt > 0 && tableXml[gt - 1] === '/') { if (curRow) curRow.push('') } // <w:tc/>
+      else tcStart = gt + 1
+    }
+  }
+  return rows
 }
 
 // Document order of a paragraph's content children (runs, hyperlinks, tracked
@@ -503,20 +598,15 @@ function getRunOrder(paraXml: string): Array<'r' | 'hyperlink' | 'ins'> {
   return order
 }
 
-// Scan raw body XML to determine document order of top-level p and tbl elements.
-// fast-xml-parser groups elements by tag name, losing cross-type ordering.
-function getBodyBlockOrder(xml: string): Array<'p' | 'tbl'> {
-  const bodyStart = xml.indexOf('<w:body>')
-  const bodyEnd = xml.lastIndexOf('</w:body>')
-  if (bodyStart === -1 || bodyEnd === -1) return []
-  const body = xml.slice(bodyStart + 8, bodyEnd)
-
+// Document order of the direct-child p and tbl elements of a container's inner
+// XML. fast-xml-parser groups elements by tag name, losing cross-type ordering.
+function blockOrderOf(inner: string): Array<'p' | 'tbl'> {
   const order: Array<'p' | 'tbl'> = []
   // Match opening/closing w:p and w:tbl tags ([\s>\/] excludes w:pPr, w:pStyle etc.)
   const re = /<(\/?)w:(p|tbl)[\s>\/]/g
   let tblDepth = 0
   let m: RegExpExecArray | null
-  while ((m = re.exec(body)) !== null) {
+  while ((m = re.exec(inner)) !== null) {
     const isClose = m[1] === '/'
     const tag = m[2] as 'p' | 'tbl'
     if (isClose) {
@@ -529,6 +619,10 @@ function getBodyBlockOrder(xml: string): Array<'p' | 'tbl'> {
   return order
 }
 
+function getBodyBlockOrder(xml: string): Array<'p' | 'tbl'> {
+  return blockOrderOf(bodyInner(xml))
+}
+
 // Parse all paragraph and table children of a container node (body, cell, etc.)
 // paraXmls (when provided, aligned 1:1 with container.p[]) lets paragraphs
 // recover their run order from raw XML.
@@ -537,15 +631,17 @@ async function parseBlockContainer(
   ctx: ParseContext,
   order?: Array<'p' | 'tbl'>,
   paraXmls?: string[],
+  tableXmls?: string[],
 ): Promise<Block[]> {
   const ps = (container.p ?? []) as Record<string, unknown>[]
   const tbls = (container.tbl ?? []) as Record<string, unknown>[]
   const xmls = paraXmls && paraXmls.length === ps.length ? paraXmls : undefined
+  const tXmls = tableXmls && tableXmls.length === tbls.length ? tableXmls : undefined
 
   if (!order || order.length === 0) {
     const blocks: Block[] = []
     for (let i = 0; i < ps.length; i++) blocks.push(...await parseParagraph(ps[i], ctx, xmls?.[i]))
-    for (const tbl of tbls) blocks.push(await parseTable(tbl, ctx))
+    for (let i = 0; i < tbls.length; i++) blocks.push(await parseTable(tbls[i], ctx, tXmls?.[i]))
     return blocks
   }
 
@@ -556,7 +652,8 @@ async function parseBlockContainer(
       blocks.push(...await parseParagraph(ps[pIdx], ctx, xmls?.[pIdx]))
       pIdx++
     } else if (type === 'tbl' && tblIdx < tbls.length) {
-      blocks.push(await parseTable(tbls[tblIdx++], ctx))
+      blocks.push(await parseTable(tbls[tblIdx], ctx, tXmls?.[tblIdx]))
+      tblIdx++
     }
   }
   return blocks
@@ -568,7 +665,8 @@ export async function parseDocument(xml: string, ctx: ParseContext): Promise<Blo
   if (!body) return []
   const order = getBodyBlockOrder(xml)
   const paraXmls = extractParagraphChunks(xml)
-  return parseBlockContainer(body, ctx, order, paraXmls)
+  const tableXmls = extractTableChunks(xml)
+  return parseBlockContainer(body, ctx, order, paraXmls, tableXmls)
 }
 
 // Parse a footer part (footerN.xml, root <w:ftr>) into content blocks.
