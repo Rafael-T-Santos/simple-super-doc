@@ -46,19 +46,22 @@ non-docx or malformed input.
   tracked changes keep their real sequence — in the body **and inside cells**).
 - **Images** — inline and anchored, as base64 data URLs.
 - **Headers & footers** — default `headerReference`/`footerReference`, rendered
-  in the page margins on every page.
+  in the page margins on every page; distinct per section when sections declare
+  their own.
 - **Page breaks** — `w:pageBreakBefore` and explicit `<w:br w:type="page"/>`.
 - **Tab stops** — right/center/decimal stops with dot/hyphen/underscore leaders
   (table-of-contents rows render as `Title …… 12`).
 - **Fields** — `PAGE` and `NUMPAGES` resolve live (robust to `\* MERGEFORMAT`
   switches); other fields (DATE, REF, PAGEREF, TOC, HYPERLINK, …) render their
-  cached result.
+  cached result. Both the complex `fldChar` form and the compact `w:fldSimple`
+  form are supported.
 - **Footnotes & endnotes** — footnotes at the bottom of the referencing page;
   endnotes on a final page.
 - **Tracked changes** — deletions and insertions, shown or hidden via the
   `showRevisions` render option.
 - **Multiple sections** — per-section page size and orientation (e.g. a
-  landscape table page between portrait pages), with continuous page numbering.
+  landscape table page between portrait pages), per-section headers/footers,
+  with continuous page numbering.
 
 ## Page-aware rendering
 
@@ -110,10 +113,10 @@ following are intentionally out of scope:
 - **Comments** — review comments are parsed away (treated as noise); only
   tracked-change insertions/deletions are surfaced (via `showRevisions`).
 
-Smaller gaps: the compact `w:fldSimple` field form (the `fldChar` form is
-supported); per-section distinct headers/footers (the default header/footer is
-shared across sections); and multi-section documents that also use full-page
-background templates (they fall back to a single section).
+Smaller gaps: a section that omits its own header/footer inherits the
+document-level default rather than the previous section's; and multi-section
+documents that also use full-page background templates fall back to a single
+section.
 
 ## Development
 
