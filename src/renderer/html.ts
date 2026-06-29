@@ -226,6 +226,20 @@ function renderFooter(doc: DocxDocument, pageDiv: HTMLElement, pageNum: number, 
   currentPageNumber = prev
 }
 
+// Render the document's header at the top of a page box, resolving PAGE fields
+// to the given page number. headerPx is the header's distance from the top edge.
+function renderHeader(doc: DocxDocument, pageDiv: HTMLElement, pageNum: number, pm: PageMargins, headerPx: number): void {
+  if (!doc.header || doc.header.length === 0) return
+  const prev = currentPageNumber
+  currentPageNumber = pageNum
+  const el = document.createElement('div')
+  el.className = 'ssd-header'
+  el.style.cssText = `position:absolute;left:${pm.left}px;right:${pm.right}px;top:${headerPx}px`
+  renderBlocks(doc.header, el)
+  pageDiv.appendChild(el)
+  currentPageNumber = prev
+}
+
 // CSS for a paragraph / list item: the document's w:spacing before/after as
 // margins, its line spacing, indentation, and the run-level style. Replaces the
 // browser's default 1em margins so the vertical rhythm matches the document.
@@ -564,9 +578,11 @@ function renderPlainPaginated(
     }
   }
 
-  // Page footer (with page numbers) on every page.
+  // Page footer / header (with page numbers) on every page.
   const footerPx = doc.pageSize?.footerPx ?? Math.round(pm.bottom / 2)
   pages.forEach((page, i) => renderFooter(doc, page, i + 1, pm, footerPx))
+  const headerPx = doc.pageSize?.headerPx ?? Math.round(pm.top / 2)
+  pages.forEach((page, i) => renderHeader(doc, page, i + 1, pm, headerPx))
 }
 
 export function render(doc: DocxDocument, container: HTMLElement): void {

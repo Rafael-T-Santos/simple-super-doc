@@ -5,10 +5,12 @@ export type DocxDocument = {
     heightPx: number
     marginPx: { top: number; right: number; bottom: number; left: number }
     footerPx?: number  // distance of the footer from the page bottom edge (w:footer)
+    headerPx?: number  // distance of the header from the page top edge (w:header)
   }
   footnotes?: NoteEntry[]  // referenced footnotes, in document order (number 1..n)
   endnotes?: NoteEntry[]   // referenced endnotes, in document order (number 1..n)
   footer?: Block[]         // default page footer (w:footerReference); PAGE fields become page numbers
+  header?: Block[]         // default page header (w:headerReference); PAGE fields become page numbers
 }
 
 // A footnote/endnote's resolved content. number matches the in-text marker.

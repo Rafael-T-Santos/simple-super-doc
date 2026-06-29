@@ -3,7 +3,7 @@ import { DocxParseError, type DocxDocument, type NoteEntry } from './types.js'
 import { parseRelationships } from './parser/relationships.js'
 import { parseStyles } from './parser/styles.js'
 import { parseNumbering, emptyNumbering } from './parser/numbering.js'
-import { parseDocument, parseNotesXml, parseFooterXml, type ParseContext } from './parser/document.js'
+import { parseDocument, parseNotesXml, parseFooterXml, parseHeaderXml, type ParseContext } from './parser/document.js'
 import { render as renderHtml } from './renderer/html.js'
 
 export type { DocxDocument, Block, ParagraphBlock, TableBlock, TableCell, TableRow, TextRun, ImageRun, Run, ComputedStyle, ListRef, NoteEntry } from './types.js'
@@ -25,6 +25,7 @@ function parsePageSize(xml: string): DocxDocument['pageSize'] {
   const bottom = /\bw:bottom="([\d.]+)"/.exec(ma)?.[1] ?? '1440'
   const left   = /\bw:left="([\d.]+)"/.exec(ma)?.[1]   ?? '1440'
   const footer = /\bw:footer="([\d.]+)"/.exec(ma)?.[1]
+  const header = /\bw:header="([\d.]+)"/.exec(ma)?.[1]
 
   return {
     widthPx:  twipsToPx(w),
@@ -36,6 +37,7 @@ function parsePageSize(xml: string): DocxDocument['pageSize'] {
       left:   twipsToPx(left),
     },
     ...(footer ? { footerPx: twipsToPx(footer) } : {}),
+    ...(header ? { headerPx: twipsToPx(header) } : {}),
   }
 }
 
@@ -91,8 +93,9 @@ export async function parse(buffer: ArrayBuffer): Promise<DocxDocument> {
   const footnotes = await resolveNotes(footnotesXml, 'footnote', ctx.footnoteRefs, ctx)
   const endnotes = await resolveNotes(endnotesXml, 'endnote', ctx.endnoteRefs, ctx)
 
-  // Default page footer (w:footerReference w:type="default").
+  // Default page footer / header (w:footerReference / w:headerReference type="default").
   const footer = await resolveFooter(documentXml, relationshipMap, zip, ctx)
+  const header = await resolveHeader(documentXml, relationshipMap, zip, ctx)
 
   return {
     blocks,
@@ -100,6 +103,7 @@ export async function parse(buffer: ArrayBuffer): Promise<DocxDocument> {
     ...(footnotes.length ? { footnotes } : {}),
     ...(endnotes.length ? { endnotes } : {}),
     ...(footer && footer.length ? { footer } : {}),
+    ...(header && header.length ? { header } : {}),
   }
 }
 
@@ -109,8 +113,29 @@ async function resolveFooter(
   zip: JSZip,
   ctx: ParseContext,
 ): Promise<DocxDocument['footer']> {
-  // Find the default footer reference's relationship id (attribute order varies).
-  const ref = /<w:footerReference\b[^>]*>/g
+  return resolvePart(documentXml, relationshipMap, zip, ctx, 'footer', parseFooterXml)
+}
+
+async function resolveHeader(
+  documentXml: string,
+  relationshipMap: ReturnType<typeof parseRelationships>,
+  zip: JSZip,
+  ctx: ParseContext,
+): Promise<DocxDocument['header']> {
+  return resolvePart(documentXml, relationshipMap, zip, ctx, 'header', parseHeaderXml)
+}
+
+// Resolve a default header/footer reference (w:headerReference / w:footerReference
+// w:type="default") to its parsed blocks. Attribute order varies, so scan tags.
+async function resolvePart(
+  documentXml: string,
+  relationshipMap: ReturnType<typeof parseRelationships>,
+  zip: JSZip,
+  ctx: ParseContext,
+  kind: 'header' | 'footer',
+  parseXml: (xml: string, ctx: ParseContext) => Promise<DocxDocument['blocks']>,
+): Promise<DocxDocument['blocks'] | undefined> {
+  const ref = new RegExp(`<w:${kind}Reference\\b[^>]*>`, 'g')
   let m: RegExpExecArray | null
   let rId: string | undefined
   while ((m = ref.exec(documentXml)) !== null) {
@@ -121,7 +146,7 @@ async function resolveFooter(
   }
   if (!rId || !relationshipMap[rId]) return undefined
   const xml = await readEntry(zip, `word/${relationshipMap[rId].target}`, false)
-  return xml ? parseFooterXml(xml, ctx) : undefined
+  return xml ? parseXml(xml, ctx) : undefined
 }
 
 async function resolveNotes(

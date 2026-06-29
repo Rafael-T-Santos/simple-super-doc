@@ -544,6 +544,14 @@ export async function parseFooterXml(xml: string, ctx: ParseContext): Promise<Bl
   return parseBlockContainer(ftr, ctx)
 }
 
+// Parse a header part (headerN.xml, root <w:hdr>) into content blocks.
+export async function parseHeaderXml(xml: string, ctx: ParseContext): Promise<Block[]> {
+  const doc = parser.parse(xml) as Record<string, unknown>
+  const hdr = doc?.hdr as Record<string, unknown> | undefined
+  if (!hdr) return []
+  return parseBlockContainer(hdr, ctx)
+}
+
 // Parse footnotes.xml / endnotes.xml into a map of note id -> content blocks.
 // `kind` is 'footnote' or 'endnote'; the root/child element names follow it.
 export async function parseNotesXml(
