@@ -25,6 +25,10 @@ import { parse, render } from 'simple-super-doc'
 const buf = await file.arrayBuffer()       // a .docx File/Blob
 const doc = await parse(buf)               // typed DocxDocument IR
 render(doc, document.getElementById('view')!)
+
+// Optional: show tracked changes (deletions struck through, insertions
+// underlined) instead of the accepted/final view.
+render(doc, view, { showRevisions: true })
 ```
 
 `parse` throws `DocxParseError` (`code: 'INVALID_ZIP' | 'MISSING_ENTRY'`) for
@@ -32,11 +36,29 @@ non-docx or malformed input.
 
 ## What it covers
 
-Paragraph and run styles (bold/italic/underline, font size/family, color,
-alignment, shading), the style cascade (docDefaults → named style → direct
-formatting), numbered and bulleted lists, tables with `gridSpan`/`vMerge`,
-inline and anchored images (as base64 data URLs), and document block ordering
-recovered from the raw XML (so paragraphs and tables keep their real sequence).
+- **Text & styles** — bold/italic/underline/strikethrough, super/subscript,
+  font size/family, color, highlight and shading, paragraph alignment
+  (including OOXML justified `both`), spacing, indentation and borders, and the
+  full style cascade (docDefaults → named style → direct formatting).
+- **Structure** — numbered and bulleted lists (nested), tables with
+  `gridSpan`/`vMerge`, column widths and cell margins, and block/run ordering
+  recovered from the raw XML (paragraphs, tables, mid-paragraph hyperlinks and
+  tracked changes keep their real sequence — in the body **and inside cells**).
+- **Images** — inline and anchored, as base64 data URLs.
+- **Headers & footers** — default `headerReference`/`footerReference`, rendered
+  in the page margins on every page.
+- **Page breaks** — `w:pageBreakBefore` and explicit `<w:br w:type="page"/>`.
+- **Tab stops** — right/center/decimal stops with dot/hyphen/underscore leaders
+  (table-of-contents rows render as `Title …… 12`).
+- **Fields** — `PAGE` and `NUMPAGES` resolve live (robust to `\* MERGEFORMAT`
+  switches); other fields (DATE, REF, PAGEREF, TOC, HYPERLINK, …) render their
+  cached result.
+- **Footnotes & endnotes** — footnotes at the bottom of the referencing page;
+  endnotes on a final page.
+- **Tracked changes** — deletions and insertions, shown or hidden via the
+  `showRevisions` render option.
+- **Multiple sections** — per-section page size and orientation (e.g. a
+  landscape table page between portrait pages), with continuous page numbering.
 
 ## Page-aware rendering
 
@@ -72,6 +94,26 @@ functions ([`test/layout-heuristics.test.ts`](test/layout-heuristics.test.ts)):
 
 These thresholds are tuned for proposal/letter-style templates. A document
 without a full-page background skips all of this and renders as a normal flow.
+
+## Limitations & non-goals
+
+This is a faithful but *simple* HTML renderer, not a Word layout engine. The
+following are intentionally out of scope:
+
+- **Floating layout** — text wrapping around floating images, multi-column
+  layouts, text boxes, shapes, charts, and SmartArt are not laid out. (Inline
+  images and tables are supported.)
+- **Pixel-exact pagination** — without Word's line-breaking and layout engine,
+  page breaks are reconstructed by two-pass DOM measurement and heuristics.
+  Pagination is close but not guaranteed to match Word/LibreOffice line for
+  line. For a byte-faithful page image, convert the `.docx` to PDF.
+- **Comments** — review comments are parsed away (treated as noise); only
+  tracked-change insertions/deletions are surfaced (via `showRevisions`).
+
+Smaller gaps: the compact `w:fldSimple` field form (the `fldChar` form is
+supported); per-section distinct headers/footers (the default header/footer is
+shared across sections); and multi-section documents that also use full-page
+background templates (they fall back to a single section).
 
 ## Development
 
