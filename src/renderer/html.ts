@@ -403,20 +403,23 @@ function renderTable(block: TableBlock, container: HTMLElement): void {
   table.style.borderCollapse = 'collapse'
   table.style.maxWidth = '100%'
 
-  // Apply the document's column widths (w:tblGrid) with a fixed layout so column
-  // proportions — and therefore text wrapping and row heights — match the
-  // document. Without this the browser sizes columns by content, narrowing some
-  // columns, wrapping text to more lines, and fitting fewer rows per page.
-  // Falls back to content-based sizing when the document gives no grid.
+  // Apply the document's column widths (w:tblGrid) with a fixed layout so columns
+  // — and therefore text wrapping and row heights — match the document. Use the
+  // ABSOLUTE widths (not 100%) so a table narrower than the page keeps its real
+  // width and alignment (w:jc) instead of being stretched full-width; maxWidth
+  // 100% still caps a table wider than its container. Falls back to content-based
+  // sizing when the document gives no grid.
   if (block.columnWidths && block.columnWidths.length > 0) {
     const total = block.columnWidths.reduce((a, b) => a + b, 0)
     if (total > 0) {
       table.style.tableLayout = 'fixed'
-      table.style.width = '100%'
+      table.style.width = `${total}px`
+      if (block.align === 'center') table.style.margin = '0 auto'
+      else if (block.align === 'right') table.style.marginLeft = 'auto'
       const colgroup = document.createElement('colgroup')
       for (const w of block.columnWidths) {
         const col = document.createElement('col')
-        col.style.width = `${((w / total) * 100).toFixed(3)}%`
+        col.style.width = `${w}px`
         colgroup.appendChild(col)
       }
       table.appendChild(colgroup)
@@ -426,6 +429,9 @@ function renderTable(block: TableBlock, container: HTMLElement): void {
   const pad = block.cellPadding
   for (const row of block.rows) {
     const tr = document.createElement('tr')
+    // w:trHeight: `height` on a table row acts as a MINIMUM (the row still grows
+    // to fit content), which matches the common "atLeast" rule.
+    if (row.heightPx) tr.style.height = `${row.heightPx}px`
     for (const cell of row.cells) {
       const td = document.createElement('td')
       if (cell.colSpan > 1) td.colSpan = cell.colSpan

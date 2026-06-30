@@ -605,7 +605,8 @@ async function parseTable(
   const resolved = resolveVMerge(rawGrid)
 
   const irRows: TableRow[] = []
-  for (const resolvedRow of resolved) {
+  for (let ri = 0; ri < resolved.length; ri++) {
+    const resolvedRow = resolved[ri]
     const irCells: TableCell[] = []
     for (const cell of resolvedRow) {
       const tc = cell.rawData as Record<string, unknown>
@@ -620,7 +621,18 @@ async function parseTable(
       if (border) irCell.border = border
       irCells.push(irCell)
     }
-    irRows.push({ cells: irCells })
+    const irRow: TableRow = { cells: irCells }
+    // Row height from w:trPr > w:trHeight (twips). hRule "exact" fixes the height;
+    // the default "atLeast" is a minimum the content can grow past.
+    const trH = (rows[ri]?.trPr as Record<string, unknown> | undefined)?.trHeight as Record<string, string> | undefined
+    if (trH?.val != null) {
+      const px = Math.round((parseFloat(trH.val) * 96) / 1440)
+      if (px > 0) {
+        irRow.heightPx = px
+        if (trH.hRule === 'exact') irRow.heightExact = true
+      }
+    }
+    irRows.push(irRow)
   }
 
   // Column widths from w:tblGrid (so columns match the document instead of being
@@ -640,11 +652,17 @@ async function parseTable(
   const marNode = (tblPr?.tblCellMar ?? firstTcPr?.tcMar) as Record<string, unknown> | undefined
   const cellPadding = marginToPx(marNode)
 
+  // Table alignment (w:jc): a table narrower than the page is placed left/center/
+  // right instead of being stretched to full width.
+  const jc = getVal(tblPr?.jc as unknown)
+  const align = jc === 'center' ? 'center' : jc === 'right' || jc === 'end' ? 'right' : undefined
+
   return {
     type: 'table',
     rows: irRows,
     ...(columnWidths.some(w => w > 0) ? { columnWidths } : {}),
     ...(cellPadding ? { cellPadding } : {}),
+    ...(align ? { align } : {}),
   }
 }
 

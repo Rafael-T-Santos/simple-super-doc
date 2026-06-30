@@ -96,10 +96,13 @@ export type TableBlock = {
   rows: TableRow[]
   columnWidths?: number[]  // px per column, from w:tblGrid gridCol widths
   cellPadding?: { top: number; right: number; bottom: number; left: number }  // px, from w:tblCellMar / w:tcMar
+  align?: 'left' | 'center' | 'right'  // table alignment (w:jc); a table narrower than the page is placed accordingly
 }
 
 export type TableRow = {
   cells: TableCell[]
+  heightPx?: number  // row height from w:trHeight (twips → px)
+  heightExact?: boolean  // w:hRule="exact" (fixed height) vs the default "atLeast" (minimum)
 }
 
 export type TableCell = {
