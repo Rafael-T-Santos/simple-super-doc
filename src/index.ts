@@ -65,13 +65,14 @@ export async function parse(buffer: ArrayBuffer): Promise<DocxDocument> {
     throw new DocxParseError('Failed to load zip archive', 'INVALID_ZIP')
   }
 
-  const [documentXml, stylesXml, relsXml, numberingXml, footnotesXml, endnotesXml] = await Promise.all([
+  const [documentXml, stylesXml, relsXml, numberingXml, footnotesXml, endnotesXml, settingsXml] = await Promise.all([
     readEntry(zip, 'word/document.xml', true),
     readEntry(zip, 'word/styles.xml', true),
     readEntry(zip, 'word/_rels/document.xml.rels', false),
     readEntry(zip, 'word/numbering.xml', false),
     readEntry(zip, 'word/footnotes.xml', false),
     readEntry(zip, 'word/endnotes.xml', false),
+    readEntry(zip, 'word/settings.xml', false),
   ])
 
   const relationshipMap = relsXml ? parseRelationships(relsXml) : {}
@@ -99,9 +100,20 @@ export async function parse(buffer: ArrayBuffer): Promise<DocxDocument> {
   const footnotes = await resolveNotes(footnotesXml, 'footnote', ctx.footnoteRefs, ctx)
   const endnotes = await resolveNotes(endnotesXml, 'endnote', ctx.endnoteRefs, ctx)
 
-  // Default page footer / header (w:footerReference / w:headerReference type="default").
+  // Page footer / header. The default applies to every page; first-page and
+  // even-page variants are used when w:titlePg (section) / w:evenAndOddHeaders
+  // (settings) opt in. Letterhead, books and reports rely on these.
   const footer = await resolveFooter(documentXml, relationshipMap, zip, ctx)
   const header = await resolveHeader(documentXml, relationshipMap, zip, ctx)
+  const headerFirst = await resolveHeader(documentXml, relationshipMap, zip, ctx, 'first')
+  const headerEven = await resolveHeader(documentXml, relationshipMap, zip, ctx, 'even')
+  const footerFirst = await resolveFooter(documentXml, relationshipMap, zip, ctx, 'first')
+  const footerEven = await resolveFooter(documentXml, relationshipMap, zip, ctx, 'even')
+  // w:titlePg lives in the body (last) sectPr; w:evenAndOddHeaders in settings.xml.
+  const bodySectScope = documentXml.slice(documentXml.lastIndexOf('<w:sectPr'))
+  const titlePg = /<w:titlePg\b[^>]*\/?>/.test(bodySectScope) && !/<w:titlePg\b[^>]*w:val="(?:0|false|off)"/.test(bodySectScope)
+  const evenAndOddHeaders = !!settingsXml && /<w:evenAndOddHeaders\b[^>]*\/?>/.test(settingsXml) &&
+    !/<w:evenAndOddHeaders\b[^>]*w:val="(?:0|false|off)"/.test(settingsXml)
 
   const pageSize = parsePageSize(documentXml)
   // Resolve a header/footer relationship id to its parsed blocks (per-section).
@@ -118,6 +130,12 @@ export async function parse(buffer: ArrayBuffer): Promise<DocxDocument> {
     ...(endnotes.length ? { endnotes } : {}),
     ...(footer && footer.length ? { footer } : {}),
     ...(header && header.length ? { header } : {}),
+    ...(headerFirst && headerFirst.length ? { headerFirst } : {}),
+    ...(headerEven && headerEven.length ? { headerEven } : {}),
+    ...(footerFirst && footerFirst.length ? { footerFirst } : {}),
+    ...(footerEven && footerEven.length ? { footerEven } : {}),
+    ...(titlePg ? { titlePg } : {}),
+    ...(evenAndOddHeaders ? { evenAndOddHeaders } : {}),
     ...(sections.length > 1 ? { sections } : {}),
   }
 }
@@ -204,8 +222,9 @@ async function resolveFooter(
   relationshipMap: ReturnType<typeof parseRelationships>,
   zip: JSZip,
   ctx: ParseContext,
+  type: 'default' | 'first' | 'even' = 'default',
 ): Promise<DocxDocument['footer']> {
-  return resolvePart(documentXml, relationshipMap, zip, ctx, 'footer', parseFooterXml)
+  return resolvePart(documentXml, relationshipMap, zip, ctx, 'footer', parseFooterXml, type)
 }
 
 async function resolveHeader(
@@ -213,12 +232,13 @@ async function resolveHeader(
   relationshipMap: ReturnType<typeof parseRelationships>,
   zip: JSZip,
   ctx: ParseContext,
+  type: 'default' | 'first' | 'even' = 'default',
 ): Promise<DocxDocument['header']> {
-  return resolvePart(documentXml, relationshipMap, zip, ctx, 'header', parseHeaderXml)
+  return resolvePart(documentXml, relationshipMap, zip, ctx, 'header', parseHeaderXml, type)
 }
 
-// Resolve a default header/footer reference (w:headerReference / w:footerReference
-// w:type="default") to its parsed blocks. Attribute order varies, so scan tags.
+// Resolve a header/footer reference of the given w:type (default/first/even) to
+// its parsed blocks. Attribute order varies, so scan tags.
 async function resolvePart(
   documentXml: string,
   relationshipMap: ReturnType<typeof parseRelationships>,
@@ -226,13 +246,14 @@ async function resolvePart(
   ctx: ParseContext,
   kind: 'header' | 'footer',
   parseXml: (xml: string, ctx: ParseContext) => Promise<DocxDocument['blocks']>,
+  type: 'default' | 'first' | 'even' = 'default',
 ): Promise<DocxDocument['blocks'] | undefined> {
   const ref = new RegExp(`<w:${kind}Reference\\b[^>]*>`, 'g')
   let m: RegExpExecArray | null
   let rId: string | undefined
   while ((m = ref.exec(documentXml)) !== null) {
     const tag = m[0]
-    if (!/w:type="default"/.test(tag)) continue
+    if (!new RegExp(`w:type="${type}"`).test(tag)) continue
     rId = /r:id="([^"]+)"/.exec(tag)?.[1]
     break
   }

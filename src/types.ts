@@ -11,6 +11,14 @@ export type DocxDocument = {
   endnotes?: NoteEntry[]   // referenced endnotes, in document order (number 1..n)
   footer?: Block[]         // default page footer (w:footerReference); PAGE fields become page numbers
   header?: Block[]         // default page header (w:headerReference); PAGE fields become page numbers
+  // Distinct first-page / even-page header & footer (w:type="first"/"even").
+  // Used only when the corresponding flag below is set.
+  headerFirst?: Block[]
+  headerEven?: Block[]
+  footerFirst?: Block[]
+  footerEven?: Block[]
+  titlePg?: boolean            // w:titlePg in the section: page 1 uses the "first" header/footer
+  evenAndOddHeaders?: boolean  // w:evenAndOddHeaders in settings: even pages use the "even" header/footer
   // Document sections, each with its own page size/orientation (w:sectPr).
   // Present only when the document has MORE THAN ONE section; a single-section
   // document uses `blocks` + `pageSize` directly. blocks[] across sections

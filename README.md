@@ -49,7 +49,8 @@ non-docx or malformed input.
 - **Images** — inline and anchored, as base64 data URLs.
 - **Headers & footers** — default `headerReference`/`footerReference`, rendered
   in the page margins on every page; distinct per section, with a section that
-  declares none inheriting the previous section's (OOXML semantics).
+  declares none inheriting the previous section's (OOXML semantics); distinct
+  first-page (`w:titlePg`) and even-page (`w:evenAndOddHeaders`) variants.
 - **Page breaks** — `w:pageBreakBefore` and explicit `<w:br w:type="page"/>`.
 - **Tab stops** — right/center/decimal stops with dot/hyphen/underscore leaders
   (table-of-contents rows render as `Title …… 12`).

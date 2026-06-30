@@ -249,14 +249,26 @@ function renderPageFootnotes(footnotes: NoteEntry[], pageDiv: HTMLElement, numbe
 
 // Render the document's footer at the bottom of a page box, resolving PAGE
 // fields to the given page number.
+// Pick the header/footer for a page: the first-page variant on page 1 (titlePg),
+// the even-page variant on even pages (evenAndOddHeaders), else the default.
+function pickPart(
+  doc: DocxDocument, pageNum: number,
+  def: Block[] | undefined, first: Block[] | undefined, even: Block[] | undefined,
+): Block[] | undefined {
+  if (doc.titlePg && pageNum === 1 && first) return first
+  if (doc.evenAndOddHeaders && pageNum % 2 === 0 && even) return even
+  return def
+}
+
 function renderFooter(doc: DocxDocument, pageDiv: HTMLElement, pageNum: number, pm: PageMargins, footerPx: number): void {
-  if (!doc.footer || doc.footer.length === 0) return
+  const footer = pickPart(doc, pageNum, doc.footer, doc.footerFirst, doc.footerEven)
+  if (!footer || footer.length === 0) return
   const prev = currentPageNumber
   currentPageNumber = pageNum
   const el = document.createElement('div')
   el.className = 'ssd-footer'
   el.style.cssText = `position:absolute;left:${pm.left}px;right:${pm.right}px;bottom:${footerPx}px`
-  renderBlocks(doc.footer, el)
+  renderBlocks(footer, el)
   pageDiv.appendChild(el)
   currentPageNumber = prev
 }
@@ -270,13 +282,14 @@ function fillTotalPages(container: HTMLElement, total: number): void {
 // Render the document's header at the top of a page box, resolving PAGE fields
 // to the given page number. headerPx is the header's distance from the top edge.
 function renderHeader(doc: DocxDocument, pageDiv: HTMLElement, pageNum: number, pm: PageMargins, headerPx: number): void {
-  if (!doc.header || doc.header.length === 0) return
+  const header = pickPart(doc, pageNum, doc.header, doc.headerFirst, doc.headerEven)
+  if (!header || header.length === 0) return
   const prev = currentPageNumber
   currentPageNumber = pageNum
   const el = document.createElement('div')
   el.className = 'ssd-header'
   el.style.cssText = `position:absolute;left:${pm.left}px;right:${pm.right}px;top:${headerPx}px`
-  renderBlocks(doc.header, el)
+  renderBlocks(header, el)
   pageDiv.appendChild(el)
   currentPageNumber = prev
 }
