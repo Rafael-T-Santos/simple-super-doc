@@ -43,7 +43,7 @@ function renderRun(run: Run, parent: HTMLElement, skipLeadingTabs = false): void
 
   if (run.type === 'image') {
     const img = document.createElement('img')
-    img.src = (run as ImageRun).src
+    setImageSrc(img, (run as ImageRun).src)
     img.width = (run as ImageRun).widthPx
     img.height = (run as ImageRun).heightPx
     img.style.display = 'inline-block'
@@ -173,6 +173,26 @@ function sanitizeHref(href: string): string {
   if (/^(#|\/|\.|[^:]*$)/.test(trimmed)) return trimmed
   if (/^(https?:|mailto:|tel:)/i.test(trimmed)) return trimmed
   return '#'
+}
+
+// Only allow safe image sources: embedded data:image/* URLs, external http(s)
+// images, and relative URLs. Anything else (javascript:, data:text/html, …) is
+// rejected to an empty string so it is never set as an <img src>. Image src does
+// not execute these schemes in browsers, but this is defense-in-depth: it keeps a
+// malicious .docx from smuggling an unexpected URL scheme through an image.
+function sanitizeImageSrc(src: string): string {
+  const trimmed = src.trim()
+  if (/^data:image\//i.test(trimmed)) return trimmed
+  if (/^https?:\/\//i.test(trimmed)) return trimmed
+  if (/^(\/|\.|[^:]*$)/.test(trimmed)) return trimmed // relative
+  return ''
+}
+
+// Set an <img>'s src only when it passes sanitizeImageSrc; an unsafe/empty src is
+// left unset (never src="") so the browser does not re-request the page URL.
+function setImageSrc(img: HTMLImageElement, src: string): void {
+  const safe = sanitizeImageSrc(src)
+  if (safe) img.src = safe
 }
 
 // Empty-paragraph line height, set per render(): template covers (hasPageBg)
@@ -1040,7 +1060,7 @@ function renderPageBgPaginated(doc: DocxDocument, container: HTMLElement): void 
         'box-shadow:0 2px 12px rgba(0,0,0,.25)',
       ].join(';')
       const img = document.createElement('img')
-      img.src = fullImg.src
+      setImageSrc(img, fullImg.src)
       // Absolute inset:0 fills the page box regardless of host img rules (a
       // host `img { height: auto }` would otherwise collapse a height:100% img
       // to 0 and the page would vanish).
@@ -1057,14 +1077,17 @@ function renderPageBgPaginated(doc: DocxDocument, container: HTMLElement): void 
       `background-size:100% ${bgH}`,
       `padding:${pm.top}px ${pm.right}px ${pm.bottom}px ${pm.left}px`,
     ]
-    if (bgImg) extra.push(`background-image:url('${bgImg.src}')`)
+    // Sanitize the background image src before interpolating it into a CSS url()
+    // so a malicious src can't break out of the url('…') and inject CSS.
+    const bgSafe = bgImg ? sanitizeImageSrc(bgImg.src) : ''
+    if (bgSafe) extra.push(`background-image:url('${bgSafe}')`)
     div.style.cssText = pageBoxCss(extra)
 
     // Watermark overlays: absolutely positioned behind the text layer. object-fit
     // fill makes the frame cover the page exactly (and hide anything in the bg).
     for (const wm of pageWatermarks[p]) {
       const img = document.createElement('img')
-      img.src = wm.src
+      setImageSrc(img, wm.src)
       img.style.cssText =
         'position:absolute;top:0;left:0;width:100%;height:100%;object-fit:fill;z-index:0;pointer-events:none'
       div.appendChild(img)

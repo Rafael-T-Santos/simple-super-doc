@@ -9,7 +9,10 @@ editors and viewers that need a faithful, inspectable model of the document.
   transform it before rendering.
 - **HTML rendering** — `render()` paints the IR into a container element.
 - **No DOM at parse time** — parsing is pure; only `render()` touches the DOM.
-- **Security** — text is written with `textContent`, never `innerHTML`.
+- **Security** — text is written with `textContent`, never `innerHTML`; hyperlink
+  hrefs and image sources are scheme-sanitized (only `http(s)`/`mailto`/`tel`/
+  relative links and `data:image`/`http(s)` images), so a malicious `.docx` can't
+  inject a `javascript:` or other unsafe URL.
 
 ## Install
 
