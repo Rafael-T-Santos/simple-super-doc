@@ -46,7 +46,13 @@ non-docx or malformed input.
   from a table style like `TableGrid` are drawn), and block/run ordering
   recovered from the raw XML (paragraphs, tables, mid-paragraph hyperlinks and
   tracked changes keep their real sequence — in the body **and inside cells**).
-- **Images** — inline and anchored, as base64 data URLs.
+- **Images** — inline and anchored DrawingML (`a:blip`) and legacy VML
+  (`w:pict`/`v:imagedata`), as base64 data URLs; external/linked images
+  (`r:link`) render from their URL. (EMF/WMF metafiles are skipped — browsers
+  can't display them.)
+- **Content controls & wrappers** — `w:sdt` (structured document tags / form
+  controls), `w:smartTag` and `w:customXml` are transparent: their content
+  (block or inline, possibly nested) renders in place instead of being dropped.
 - **Headers & footers** — default `headerReference`/`footerReference`, rendered
   in the page margins on every page; distinct per section, with a section that
   declares none inheriting the previous section's (OOXML semantics); distinct
@@ -56,12 +62,17 @@ non-docx or malformed input.
   (table-of-contents rows render as `Title …… 12`).
 - **Fields** — `PAGE` and `NUMPAGES` resolve live (robust to `\* MERGEFORMAT`
   switches); other fields (DATE, REF, PAGEREF, TOC, HYPERLINK, …) render their
-  cached result. Both the complex `fldChar` form and the compact `w:fldSimple`
+  cached result. Both the complex `fldChar` form (whether split across runs or
+  packed into a single run, as Google Docs exports) and the compact `w:fldSimple`
   form are supported.
 - **Footnotes & endnotes** — footnotes at the bottom of the referencing page;
   endnotes on a final page.
-- **Tracked changes** — deletions and insertions, shown or hidden via the
-  `showRevisions` render option.
+- **Tracked changes** — deletions, insertions, and moves (`w:moveFrom`/
+  `w:moveTo`), shown or hidden via the `showRevisions` render option.
+- **Right-to-left** — `w:bidi` paragraphs and `w:rtl` runs (Arabic/Hebrew) render
+  with `dir="rtl"`; Unicode text (incl. CJK) is preserved as-is.
+- **Equations** — OMML (`m:oMath`) renders as its linear text (inline, display
+  and in table cells); 2D layout is out of scope (see below).
 - **Multiple sections** — per-section page size and orientation (e.g. a
   landscape table page between portrait pages), per-section headers/footers,
   with continuous page numbering. Each section is routed to the plain or
