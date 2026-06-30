@@ -8,20 +8,31 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
     }
   },
+  "sideEffects": false,
   "files": ["dist"],
   "scripts": {
     "build": "tsup src/index.ts --format esm --dts",
     "build:demo": "tsup src/index.ts --format iife --global-name SimpleDoc --outDir demo",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build && npm run typecheck && npm test"
   },
-  "keywords": ["docx", "word", "renderer", "parser", "document", "ir"],
+  "keywords": ["docx", "word", "renderer", "parser", "document", "ir", "ooxml", "html"],
   "license": "MIT",
+  "author": "Rafael-T-Santos <dev.rafaelsantos@outlook.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Rafael-T-Santos/simple-super-doc.git"
+  },
+  "homepage": "https://github.com/Rafael-T-Santos/simple-super-doc#readme",
+  "bugs": {
+    "url": "https://github.com/Rafael-T-Santos/simple-super-doc/issues"
+  },
   "dependencies": {
     "fast-xml-parser": "^5.9.3",
     "jszip": "^3.10.1"
