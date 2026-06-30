@@ -63,6 +63,12 @@ export function extractRPr(rPr: Record<string, unknown> | undefined): ComputedSt
     else if (va === 'subscript') s.vertAlign = 'sub'
   }
 
+  // right-to-left run (w:rtl) — Arabic/Hebrew text; renders with dir="rtl"
+  if ('rtl' in rPr) {
+    const val = (rPr.rtl as Record<string, string> | undefined)?.val
+    s.rtl = !(val === '0' || val === 'false' || val === 'off')
+  }
+
   // named highlight color (distinct from w:shd fill)
   if ('highlight' in rPr) {
     const val = (rPr.highlight as Record<string, string>)?.val
@@ -166,6 +172,12 @@ export function extractPPr(pPr: Record<string, unknown> | undefined): Partial<Co
     else if (val === 'right' || val === 'end') s.alignment = 'right'
     else if (val === 'both' || val === 'distribute' || val === 'justify') s.alignment = 'justify'
     else s.alignment = 'left'
+  }
+
+  // right-to-left paragraph (w:bidi) — flows and aligns right; renders dir="rtl"
+  if ('bidi' in pPr) {
+    const val = (pPr.bidi as Record<string, string> | undefined)?.val
+    s.rtl = !(val === '0' || val === 'false' || val === 'off')
   }
 
   // paragraph borders (w:pBdr): top/bottom/left/right with sz (eighths of a pt),

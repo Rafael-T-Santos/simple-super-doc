@@ -111,9 +111,12 @@ function renderRun(run: Run, parent: HTMLElement, skipLeadingTabs = false): void
   const css = styleToCss(textRun.style)
 
   if (textRun.text) {
-    if (css) {
+    // A right-to-left run (w:rtl) needs dir="rtl" so a span is forced even with
+    // no other styling.
+    if (css || textRun.style.rtl) {
       const span = document.createElement('span')
-      span.style.cssText = css
+      if (css) span.style.cssText = css
+      if (textRun.style.rtl) span.dir = 'rtl'
       // SECURITY: use textContent, never innerHTML
       span.textContent = textRun.text
       target.appendChild(span)
@@ -305,6 +308,8 @@ function paragraphCss(style: ComputedStyle, skipIndent = false): string {
 function renderParagraph(block: ParagraphBlock): HTMLElement {
   const p = document.createElement('p')
   p.style.cssText = paragraphCss(block.style)
+  // Right-to-left paragraph (w:bidi): the browser then flows and right-aligns it.
+  if (block.style.rtl) p.dir = 'rtl'
 
   // A right/center/decimal tab stop with leading tabs (a table-of-contents row:
   // "Title.....12") is laid out with a flex leader instead of a blank spacer.

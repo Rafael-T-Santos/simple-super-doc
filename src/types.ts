@@ -131,6 +131,7 @@ export type ComputedStyle = {
   fontFamily?: string    // from w:rFonts w:ascii (fallback w:hAnsi)
   color?: string         // hex e.g. "FF0000"; "auto" is filtered out at parse time
   alignment?: 'left' | 'center' | 'right' | 'justify'
+  rtl?: boolean          // right-to-left: w:bidi (paragraph) or w:rtl (run) → dir="rtl"
   backgroundColor?: string  // hex from w:shd fill (e.g. "ff6109"), no # prefix
   highlight?: string     // CSS color name from w:highlight (e.g. "yellow")
   // Paragraph spacing (from w:spacing). Run-level styles ignore these.
