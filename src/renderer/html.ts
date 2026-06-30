@@ -931,18 +931,18 @@ function renderPageBgPaginated(doc: DocxDocument, container: HTMLElement): void 
   }
 
   // pageBg[p]: distinct bg k covers page k; the last one fills all trailing pages.
-  // bgStartsHere[p]: a distinct background REGION begins on this page (a genuine
-  // cover/divider page), as opposed to a page that merely inherits the last
-  // background. The distinction matters when dropping blank pages below: a cover
-  // whose only text is an emptied template variable has no visible flow but is a
-  // real page and must keep its background; empty runoff that just trails the
-  // last background must still be dropped.
+  // keepIfEmpty[p]: this page is kept even with no visible flow. ONLY the cover
+  // (the first distinct background) qualifies: a cover whose only text is an
+  // emptied template variable still has a real, intentional page. Later
+  // background regions (body frames, closing frames) that START on an otherwise
+  // empty page are runoff/overlay, not real pages — keeping them produced phantom
+  // pages with just a frame and no text between the cover and the first content.
   const pageBg: Array<ImageRun | null> = new Array(totalPages).fill(null)
-  const bgStartsHere: boolean[] = new Array(totalPages).fill(false)
+  const keepIfEmpty: boolean[] = new Array(totalPages).fill(false)
   for (let k = 0; k < distinctBgs.length; k++) {
     const startPage = Math.min(k, totalPages - 1)
     const end = k + 1 < distinctBgs.length ? Math.min(k + 1, totalPages) : totalPages
-    bgStartsHere[startPage] = true
+    if (k === 0) keepIfEmpty[startPage] = true
     for (let p = startPage; p < end; p++) pageBg[p] = distinctBgs[k]
   }
 
@@ -1004,11 +1004,12 @@ function renderPageBgPaginated(doc: DocxDocument, container: HTMLElement): void 
     const isNotePage = p === totalPages - 1 && notePage.childNodes.length > 0 && blocks.length === 0
 
     // Skip blank pages (only empty paragraphs) — trailing/standalone whitespace
-    // would otherwise produce an empty page. A page where a background region
-    // begins is a genuine template page (cover/divider) and is kept even with no
-    // visible flow, so its background still renders.
-    const isGenuineBgPage = bgStartsHere[p] && (pageBg[p] !== null || pageWatermarks[p].length > 0)
-    if (!isNotePage && !blocks.some(isBlockVisible) && !isGenuineBgPage) continue
+    // would otherwise produce an empty page. The cover is kept even with no
+    // visible flow (its only text may be an emptied template variable) so its
+    // background still renders; other empty pages — including a body/closing
+    // frame region that starts on an empty page — are dropped.
+    const keepEmptyCover = keepIfEmpty[p] && (pageBg[p] !== null || pageWatermarks[p].length > 0)
+    if (!isNotePage && !blocks.some(isBlockVisible) && !keepEmptyCover) continue
 
     const div = document.createElement('div')
     div.className = 'ssd-page'
