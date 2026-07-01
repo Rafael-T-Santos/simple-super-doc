@@ -20,7 +20,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "prepublishOnly": "npm run build && npm run typecheck && npm test"
+    "prepublishOnly": "npm run build && npm run typecheck && npm test",
+    "postversion": "git push origin HEAD --follow-tags"
   },
   "keywords": ["docx", "word", "renderer", "parser", "document", "ir", "ooxml", "html"],
   "license": "MIT",
