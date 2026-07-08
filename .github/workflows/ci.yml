@@ -25,5 +25,11 @@ jobs:
       - name: Tests
         run: npm test
 
+      - name: Install Chromium for browser tests
+        run: npx playwright-core install --with-deps chromium
+
+      - name: Browser tests (page-aware renderer)
+        run: npm run test:browser
+
       - name: Build
         run: npm run build

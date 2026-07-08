@@ -22,6 +22,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:browser": "vitest run --config vitest.browser.config.ts",
     "prepublishOnly": "npm run build && npm run typecheck && npm test",
     "postversion": "git push origin HEAD --follow-tags"
   },
@@ -51,6 +52,8 @@
   },
   "devDependencies": {
     "@types/node": "^26.0.1",
+    "esbuild": "^0.27.7",
+    "playwright-core": "^1.61.1",
     "tsup": "^8.5.1",
     "typescript": "^6.0.3",
     "vitest": "^4.1.9"

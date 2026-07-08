@@ -58,6 +58,29 @@ describe('parseNumbering', () => {
   })
 })
 
+describe('lvlText (bullet glyph)', () => {
+  const XML = `<?xml version="1.0"?>
+  <w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+    <w:abstractNum w:abstractNumId="0">
+      <w:lvl w:ilvl="0"><w:numFmt w:val="bullet"/><w:lvlText w:val="-"/></w:lvl>
+      <w:lvl w:ilvl="1"><w:numFmt w:val="decimal"/><w:lvlText w:val="%2."/></w:lvl>
+      <w:lvl w:ilvl="2"><w:numFmt w:val="bullet"/></w:lvl>
+    </w:abstractNum>
+    <w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>
+  </w:numbering>`
+
+  it('captures the literal lvlText for each level', () => {
+    const { abstractNumMap } = parseNumbering(XML)
+    expect(abstractNumMap['0'][0].text).toBe('-')
+    expect(abstractNumMap['0'][1].text).toBe('%2.')
+  })
+
+  it('leaves text undefined when the level has no lvlText', () => {
+    const { abstractNumMap } = parseNumbering(XML)
+    expect(abstractNumMap['0'][2].text).toBeUndefined()
+  })
+})
+
 describe('emptyNumbering', () => {
   it('returns empty maps', () => {
     const { abstractNumMap, numMap } = emptyNumbering()

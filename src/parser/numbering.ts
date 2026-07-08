@@ -1,6 +1,6 @@
 import { XMLParser } from 'fast-xml-parser'
 
-type LevelInfo = { format: string; start: number }
+type LevelInfo = { format: string; start: number; text?: string }
 
 export type AbstractNumMap = Record<string, Record<number, LevelInfo>>
 export type NumEntry = { abstractNumId: string; startOverride?: number }
@@ -26,9 +26,11 @@ export function parseNumbering(xml: string): { abstractNumMap: AbstractNumMap; n
       const ilvl = parseInt(String((lvl as Record<string, string>).ilvl), 10)
       const fmtNode = lvl.numFmt as Record<string, string> | undefined
       const startNode = lvl.start as Record<string, string> | undefined
+      const textNode = lvl.lvlText as Record<string, string> | undefined
       const format = fmtNode?.val ?? 'bullet'
       const start = parseInt(startNode?.val ?? '1', 10)
-      abstractNumMap[id][ilvl] = { format, start: isNaN(start) ? 1 : start }
+      const text = textNode?.val
+      abstractNumMap[id][ilvl] = { format, start: isNaN(start) ? 1 : start, ...(text !== undefined ? { text } : {}) }
     }
   }
 

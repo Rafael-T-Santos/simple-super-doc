@@ -4,6 +4,10 @@ Browser-only TypeScript library that parses a `.docx` file into a typed
 intermediate representation (IR) and renders it to HTML. Built for document
 editors and viewers that need a faithful, inspectable model of the document.
 
+**▶️ [Try it live](https://rafael-t-santos.github.io/simple-super-doc/)** — drag
+and drop any `.docx` in your browser to see it rendered. Nothing is uploaded;
+parsing and rendering happen entirely on your machine.
+
 - **Typed IR** — `parse()` returns a `DocxDocument` of `Block`s (paragraphs,
   tables) with computed styles, lists, images, and page size. Inspect or
   transform it before rendering.
@@ -140,11 +144,17 @@ following are intentionally out of scope:
 ## Development
 
 ```bash
-npm run typecheck   # tsc --noEmit
-npm test            # vitest
-npm run build       # esm + d.ts into dist/
-npm run build:demo  # IIFE bundle into demo/ for the drag-and-drop demo
+npm run typecheck    # tsc --noEmit
+npm test             # vitest (node) — parser + pure layout heuristics
+npm run test:browser # Playwright (headless Chromium) — page-aware rendering
+npm run build        # esm + d.ts into dist/
+npm run build:demo   # IIFE bundle into demo/ for the drag-and-drop demo
 ```
+
+The two-pass, page-aware pagination (table splitting, per-page footnotes) needs
+a real layout engine, so it's covered by browser tests in
+[`test/browser/`](test/browser/) rather than the node suite. Install the browser
+once with `npx playwright-core install chromium`.
 
 ## License
 

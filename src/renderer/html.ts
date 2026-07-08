@@ -496,6 +496,18 @@ const LIST_STYLE: Record<string, string> = {
   none: 'none',
 }
 
+// The CSS list-style-type for a list level. For bullets, honor the document's
+// literal w:lvlText (e.g. "-" or "*") when it's plain printable ASCII, so a
+// hyphen bullet renders as "-" and not a generic "•". Symbol-font glyphs
+// (Wingdings, U+2022, …) are non-ASCII and need their own font, so they fall
+// back to the generic `disc` rather than rendering as tofu.
+function listStyleTypeFor(format: string, bulletText?: string): string | undefined {
+  if (format === 'bullet' && bulletText && /^[\x20-\x7E]+$/.test(bulletText)) {
+    return `"${bulletText.replace(/[\\"]/g, '\\$&')}"`
+  }
+  return LIST_STYLE[format]
+}
+
 // One open list level while rendering nested lists. The stack's depth tracks
 // the current w:ilvl; index i holds the <ol>/<ul> for level i.
 type ListFrame = { el: HTMLElement; numId: string; lastLi: HTMLElement | null }
@@ -513,7 +525,7 @@ function renderBlocks(blocks: Block[], container: HTMLElement): void {
 
   for (const block of blocks) {
     if (block.type === 'paragraph' && block.list) {
-      const { numId, ordered, start, ilvl, format } = block.list
+      const { numId, ordered, start, ilvl, format, bulletText } = block.list
 
       // A different list (different numId) at the base ends the previous one.
       if (stack.length > 0 && stack[0].numId !== numId) closeLists()
@@ -527,7 +539,7 @@ function renderBlocks(blocks: Block[], container: HTMLElement): void {
       while (stack.length < ilvl + 1) {
         const listEl = document.createElement(ordered ? 'ol' : 'ul')
         if (ordered) (listEl as HTMLOListElement).start = start
-        const styleType = LIST_STYLE[format]
+        const styleType = listStyleTypeFor(format, bulletText)
         if (styleType) listEl.style.listStyleType = styleType
         // Indent from the item's w:ind (the marker hangs in this padding);
         // fall back to a modest default when the document doesn't specify one.
@@ -680,20 +692,37 @@ function renderPlainPaginated(
       for (;;) {
         pageDiv.appendChild(table)
         const th = table.offsetHeight
-        if (used + th <= contentH - reserve) { used += th; break } // fits
-        const rest = splitTableRows(table, contentH - reserve - used)
+        // Reserve space for footnotes referenced by the rows about to land on
+        // this page: Word puts a row's footnote at the bottom of the page that
+        // holds the row, so those rows must break early enough to leave room.
+        // Use the whole remaining table's refs as an upper bound for the split
+        // budget (safe: never overlaps), then record only the refs that
+        // actually stayed on this page.
+        const pieceRefs = footnoteNumbersIn(table)
+        const pieceReserve = fnReserve(pieceRefs, pageHasFn)
+        if (used + th <= contentH - reserve - pieceReserve) {
+          used += th
+          recordFootnotes(pieceRefs, pieceReserve)
+          break // whole remaining table fits (with room for its footnotes)
+        }
+        const rest = splitTableRows(table, contentH - reserve - pieceReserve - used)
         if (!rest) {
-          if (used === 0) { used += th; break } // taller than a full page; accept overflow
+          if (used === 0) {
+            used += th
+            recordFootnotes(pieceRefs, pieceReserve)
+            break // taller than a full page; accept overflow
+          }
           pageDiv.removeChild(table)
           pageDiv = newPage()
           continue // retry on a fresh page
         }
-        // `table` now holds the rows that fit; `rest` continues on a new page.
+        // `table` now holds the rows that fit on this page; record their
+        // footnotes here, then continue with `rest` on a new page.
+        const fitRefs = footnoteNumbersIn(table)
+        recordFootnotes(fitRefs, fnReserve(fitRefs, pageHasFn))
         pageDiv = newPage()
         table = rest
       }
-      const refs = footnoteNumbersIn(table)
-      recordFootnotes(refs, fnReserve(refs, pageHasFn))
       continue
     }
 

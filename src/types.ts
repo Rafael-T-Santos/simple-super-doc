@@ -130,6 +130,7 @@ export type ListRef = {
   ordered: boolean  // true = numbered, false = bullet
   start: number
   format: string    // OOXML w:numFmt val (decimal, lowerLetter, lowerRoman, bullet, ...)
+  bulletText?: string // OOXML w:lvlText (e.g. "-", "*"); the literal bullet glyph for bullet lists
 }
 
 export type ComputedStyle = {
