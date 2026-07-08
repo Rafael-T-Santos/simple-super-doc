@@ -269,8 +269,19 @@ async function resolveRid(
   parseXml: (xml: string, ctx: ParseContext) => Promise<DocxDocument['blocks']>,
 ): Promise<DocxDocument['blocks'] | undefined> {
   if (!rId || !relationshipMap[rId]) return undefined
-  const xml = await readEntry(zip, `word/${relationshipMap[rId].target}`, false)
-  return xml ? parseXml(xml, ctx) : undefined
+  const target = relationshipMap[rId].target
+  const xml = await readEntry(zip, `word/${target}`, false)
+  if (!xml) return undefined
+  // A header/footer part has its OWN relationships file (e.g.
+  // word/_rels/header1.xml.rels). Images and hyperlinks inside the part use that
+  // rId namespace, not the document's, so parse the part with its own map
+  // (falling back to the document's when the part declares none).
+  const base = target.replace(/^.*\//, '')
+  const partRelsXml = await readEntry(zip, `word/_rels/${base}.rels`, false)
+  const partCtx: ParseContext = partRelsXml
+    ? { ...ctx, relationshipMap: parseRelationships(partRelsXml) }
+    : ctx
+  return parseXml(xml, partCtx)
 }
 
 async function resolveNotes(

@@ -202,17 +202,19 @@ async function parseRun(
   }
 
   // Text run. A tracked-deletion run carries its text in <w:delText> instead of
-  // <w:t>, so fall back to it.
-  const tNode = r.t ?? r.delText
-  let text = ''
-  if (typeof tNode === 'string') {
-    text = tNode
-  } else if (typeof tNode === 'object' && tNode !== null) {
-    const t = tNode as Record<string, unknown>
-    text = String(t['#text'] ?? t._ ?? '')
-  } else if (tNode != null) {
-    text = String(tNode)
+  // <w:t>, so fall back to it. A single run may hold MULTIPLE <w:t> segments
+  // (e.g. Google Docs packs "text <w:tab/> text" into one run) — fast-xml-parser
+  // then gives an array, so join the segments instead of dropping them.
+  const extractText = (node: unknown): string => {
+    if (typeof node === 'string') return node
+    if (Array.isArray(node)) return node.map(extractText).join('')
+    if (typeof node === 'object' && node !== null) {
+      const t = node as Record<string, unknown>
+      return String(t['#text'] ?? t._ ?? '')
+    }
+    return node != null ? String(node) : ''
   }
+  const text = extractText(r.t ?? r.delText)
 
   // Leading tab(s) in the run (w:tab) — rendered as spacers.
   const tabNode = r.tab
