@@ -96,7 +96,7 @@ async function parseRun(
   paraStyle: ComputedStyle,
   ctx: ParseContext,
   href?: string,
-): Promise<Run | null> {
+): Promise<Run | Run[] | null> {
   const rPr = r.rPr as Record<string, unknown> | undefined
 
   // Field instructions and field characters are handled by the field state
@@ -167,6 +167,17 @@ async function parseRun(
     const resolved = await resolveImage(rId, ctx.relationshipMap, ctx.zip)
     if (!resolved) return null
 
+    // Anchor offset (EMU → px) so a positioned header/footer logo can be placed
+    // (letterhead). Body floating layout stays out of scope; the renderer only
+    // consults these inside a header/footer.
+    const offsetPx = (pos: unknown): number | undefined => {
+      const off = (pos as Record<string, unknown> | undefined)?.posOffset
+      const n = off != null ? parseInt(String((off as Record<string, unknown>)['#text'] ?? off), 10) : NaN
+      return Number.isNaN(n) ? undefined : Math.round(n / 9525)
+    }
+    const anchorXPx = anchor ? offsetPx(anchor.positionH) : undefined
+    const anchorYPx = anchor ? offsetPx(anchor.positionV) : undefined
+
     const img: ImageRun = {
       type: 'image',
       src: resolved.src,
@@ -174,6 +185,8 @@ async function parseRun(
       heightPx: Math.round(cy / 9525),
       ...(isPageBackground ? { isPageBackground: true } : {}),
       ...(href ? { href } : {}),
+      ...(anchorXPx !== undefined ? { anchorXPx } : {}),
+      ...(anchorYPx !== undefined ? { anchorYPx } : {}),
     }
     return img
   }
@@ -201,32 +214,41 @@ async function parseRun(
     return null
   }
 
-  // Text run. A tracked-deletion run carries its text in <w:delText> instead of
-  // <w:t>, so fall back to it. A single run may hold MULTIPLE <w:t> segments
-  // (e.g. Google Docs packs "text <w:tab/> text" into one run) — fast-xml-parser
-  // then gives an array, so join the segments instead of dropping them.
-  const extractText = (node: unknown): string => {
-    if (typeof node === 'string') return node
-    if (Array.isArray(node)) return node.map(extractText).join('')
-    if (typeof node === 'object' && node !== null) {
+  // Text run(s). A tracked-deletion run carries its text in <w:delText> instead
+  // of <w:t>. A single run may also hold MULTIPLE <w:t> segments interleaved
+  // with <w:tab/> — Google Docs packs "text <w:tab/> text" into one <w:r>. The
+  // XML grouping loses the exact text/tab order, so split into ordered runs by
+  // the two dominant patterns: one tab between each segment, else all tabs
+  // between the first two (keeps a footer's "V.4 <tabs> CONFIDENCIAL" split so
+  // the trailing part right-aligns instead of getting dragged along the tabs).
+  const collectText = (node: unknown): string[] => {
+    if (node == null) return []
+    if (Array.isArray(node)) return node.flatMap(collectText)
+    if (typeof node === 'string') return [node]
+    if (typeof node === 'object') {
       const t = node as Record<string, unknown>
-      return String(t['#text'] ?? t._ ?? '')
+      return [String(t['#text'] ?? t._ ?? '')]
     }
-    return node != null ? String(node) : ''
+    return [String(node)]
   }
-  const text = extractText(r.t ?? r.delText)
-
-  // Leading tab(s) in the run (w:tab) — rendered as spacers.
+  const segments = collectText(r.t ?? r.delText)
   const tabNode = r.tab
-  const tabs = Array.isArray(tabNode) ? tabNode.length : 'tab' in r ? 1 : 0
+  const tabCount = Array.isArray(tabNode) ? tabNode.length : 'tab' in r ? 1 : 0
 
-  const textRun: TextRun = {
+  const makeRun = (text: string, tabs: number, isLast: boolean): TextRun => ({
     type: 'run', text, style: runStyle,
     ...(href ? { href } : {}),
-    ...(lineBreak ? { lineBreak: true } : {}),
+    ...(isLast && lineBreak ? { lineBreak: true } : {}),
     ...(tabs ? { tabs } : {}),
-  }
-  return textRun
+  })
+
+  // Simple case: 0 or 1 text segment with leading tabs.
+  if (segments.length <= 1) return makeRun(segments[0] ?? '', tabCount, true)
+
+  const interleave = tabCount === segments.length - 1
+  return segments.map((seg, i) =>
+    makeRun(seg, i === 0 ? 0 : interleave ? 1 : i === 1 ? tabCount : 0, i === segments.length - 1),
+  )
 }
 
 // Resolve a <w:hyperlink>'s destination: an external URL via r:id (relationships)
@@ -394,7 +416,7 @@ async function parseParagraph(
       else {
         for (const ir of innerRuns) {
           const run = await parseRun(ir, paraStyle, ctx)
-          if (run !== null) runs.push(run)
+          if (run !== null) runs.push(...(Array.isArray(run) ? run : [run]))
         }
       }
       continue
@@ -431,9 +453,11 @@ async function parseParagraph(
     if (fieldStack.some(f => f.inResult && LIVE_FIELDS.has(f.name))) continue
     const run = await parseRun(r, paraStyle, ctx, href)
     if (run !== null) {
-      if (deleted && run.type === 'run') (run as TextRun).deleted = true
-      if (inserted && run.type === 'run') (run as TextRun).inserted = true
-      runs.push(run)
+      for (const rn of Array.isArray(run) ? run : [run]) {
+        if (deleted && rn.type === 'run') (rn as TextRun).deleted = true
+        if (inserted && rn.type === 'run') (rn as TextRun).inserted = true
+        runs.push(rn)
+      }
     }
   }
 

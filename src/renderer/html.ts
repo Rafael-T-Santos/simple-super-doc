@@ -42,12 +42,21 @@ function renderRun(run: Run, parent: HTMLElement, skipLeadingTabs = false): void
   }
 
   if (run.type === 'image') {
+    const ir = run as ImageRun
     const img = document.createElement('img')
-    setImageSrc(img, (run as ImageRun).src)
-    img.width = (run as ImageRun).widthPx
-    img.height = (run as ImageRun).heightPx
+    setImageSrc(img, ir.src)
+    img.width = ir.widthPx
+    img.height = ir.heightPx
     img.style.display = 'inline-block'
     img.style.maxWidth = '100%'
+    // A positioned header/footer logo (letterhead): honor the anchor offset so
+    // it lands where Word puts it (e.g. top-right) instead of flowing inline.
+    if (inHeaderFooter && ir.anchorXPx !== undefined) {
+      img.style.position = 'absolute'
+      img.style.left = `${ir.anchorXPx}px`
+      img.style.top = `${ir.anchorYPx ?? 0}px`
+      img.style.maxWidth = 'none'
+    }
     target.appendChild(img)
     return
   }
@@ -218,6 +227,12 @@ function ensureLineBox(el: HTMLElement): void {
 // spacing, so paragraph before/after margins are suppressed to keep rows compact.
 let inTableCell = false
 
+// Set while rendering a header/footer: those parts carry implicit default tab
+// stops (a centered stop mid-page and a right stop at the margin) that Word uses
+// for the classic "left <tab> center <tab> right" layout, so a tabbed paragraph
+// with no explicit stops still right-aligns its trailing segment.
+let inHeaderFooter = false
+
 // The page number substituted for PAGE fields, set per page by renderFooter.
 let currentPageNumber = 0
 
@@ -288,7 +303,10 @@ function renderFooter(doc: DocxDocument, pageDiv: HTMLElement, pageNum: number, 
   const el = document.createElement('div')
   el.className = 'ssd-footer'
   el.style.cssText = `position:absolute;left:${pm.left}px;right:${pm.right}px;bottom:${footerPx}px`
+  const prevHF = inHeaderFooter
+  inHeaderFooter = true
   renderBlocks(footer, el)
+  inHeaderFooter = prevHF
   pageDiv.appendChild(el)
   currentPageNumber = prev
 }
@@ -309,7 +327,10 @@ function renderHeader(doc: DocxDocument, pageDiv: HTMLElement, pageNum: number, 
   const el = document.createElement('div')
   el.className = 'ssd-header'
   el.style.cssText = `position:absolute;left:${pm.left}px;right:${pm.right}px;top:${headerPx}px`
+  const prevHF = inHeaderFooter
+  inHeaderFooter = true
   renderBlocks(header, el)
+  inHeaderFooter = prevHF
   pageDiv.appendChild(el)
   currentPageNumber = prev
 }
@@ -346,8 +367,17 @@ function renderParagraph(block: ParagraphBlock): HTMLElement {
 
   // A right/center/decimal tab stop with leading tabs (a table-of-contents row:
   // "Title.....12") is laid out with a flex leader instead of a blank spacer.
-  const stops = block.style.tabStops
+  let stops = block.style.tabStops
   const hasTabRun = block.runs.some(r => r.type === 'run' && ((r as TextRun).tabs ?? 0) > 0)
+  // In a header/footer, a tabbed paragraph with no explicit stops gets Word's
+  // implicit center + right stops so "V.4 <tabs> CONFIDENCIAL" splits left/right
+  // instead of drifting to the middle.
+  if (inHeaderFooter && hasTabRun && !stops?.some(s => s.val === 'right' || s.val === 'center' || s.val === 'decimal')) {
+    stops = [
+      { posPx: 0, val: 'center', leader: 'none' },
+      { posPx: 0, val: 'right', leader: 'none' },
+    ]
+  }
   const alignStop = stops?.some(s => s.val === 'right' || s.val === 'center' || s.val === 'decimal')
   if (hasTabRun && stops && alignStop) {
     renderTabbedParagraph(block, p, stops)

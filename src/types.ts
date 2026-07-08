@@ -89,6 +89,8 @@ export type ImageRun = {
   heightPx: number
   isPageBackground?: boolean  // true when wp:anchor behindDoc="1" (full-page background)
   href?: string  // set when the image is inside a w:hyperlink
+  anchorXPx?: number  // wp:anchor positionH posOffset in px (letterhead logos in headers)
+  anchorYPx?: number  // wp:anchor positionV posOffset in px
 }
 
 export type TableBlock = {

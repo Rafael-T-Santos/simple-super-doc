@@ -233,3 +233,108 @@ describe('bullet lists: literal lvlText glyph', () => {
     expect(styleType).toBe('"-"')
   }, 30_000)
 })
+
+// A .docx with a letterhead-style header (an anchored logo positioned toward the
+// right) and a "left <tab> right" footer, to prove header/footer positioning:
+// the footer's trailing segment right-aligns and the anchored logo lands at its
+// offset instead of flowing inline at the left.
+async function buildHeaderFooterLayoutDocx(): Promise<string> {
+  const zip = new JSZip()
+  zip.file('[Content_Types].xml',
+    `<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
+    `<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>` +
+    `<Default Extension="xml" ContentType="application/xml"/>` +
+    `<Default Extension="png" ContentType="image/png"/>` +
+    `<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>` +
+    `<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>`)
+  zip.file('_rels/.rels',
+    `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+    `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`)
+  zip.file('word/styles.xml',
+    `<?xml version="1.0"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
+    `<w:docDefaults><w:rPrDefault><w:rPr><w:sz w:val="24"/></w:rPr></w:rPrDefault></w:docDefaults></w:styles>`)
+  zip.file('word/_rels/document.xml.rels',
+    `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+    `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>` +
+    `<Relationship Id="rId10" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>` +
+    `<Relationship Id="rId11" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/>` +
+    `</Relationships>`)
+  zip.file('word/_rels/header1.xml.rels',
+    `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+    `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/logo.png"/>` +
+    `</Relationships>`)
+  zip.file('word/media/logo.png', new Uint8Array([0x89, 0x50, 0x4e, 0x47]))
+  zip.file('word/header1.xml',
+    `<?xml version="1.0"?><w:hdr ` +
+    `xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ` +
+    `xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" ` +
+    `xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" ` +
+    `xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" ` +
+    `xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">` +
+    `<w:p><w:r><w:drawing><wp:anchor behindDoc="1">` +
+    `<wp:positionH relativeFrom="column"><wp:posOffset>5000000</wp:posOffset></wp:positionH>` +
+    `<wp:positionV relativeFrom="paragraph"><wp:posOffset>0</wp:posOffset></wp:positionV>` +
+    `<wp:extent cx="900000" cy="250000"/>` +
+    `<a:graphic><a:graphicData><pic:pic><pic:blipFill>` +
+    `<a:blip r:embed="rId1"/></pic:blipFill></pic:pic></a:graphicData></a:graphic>` +
+    `</wp:anchor></w:drawing></w:r></w:p></w:hdr>`)
+  zip.file('word/footer1.xml',
+    `<?xml version="1.0"?><w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
+    `<w:p><w:r><w:t xml:space="preserve">LEFTSIDE </w:t><w:tab/><w:tab/>` +
+    `<w:t xml:space="preserve">RIGHTSIDE</w:t></w:r></w:p></w:ftr>`)
+  zip.file('word/document.xml',
+    `<?xml version="1.0"?><w:document ` +
+    `xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ` +
+    `xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">` +
+    `<w:body><w:p><w:r><w:t>Body</w:t></w:r></w:p>` +
+    `<w:sectPr><w:headerReference w:type="default" r:id="rId10"/>` +
+    `<w:footerReference w:type="default" r:id="rId11"/>` +
+    `<w:pgSz w:w="12240" w:h="15840"/>` +
+    `<w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720"/>` +
+    `</w:sectPr></w:body></w:document>`)
+  const buf = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' })
+  return buf.toString('base64')
+}
+
+describe('header/footer positioning', () => {
+  it('right-aligns a footer\'s trailing tab segment and positions a header logo', async () => {
+    const b64 = await buildHeaderFooterLayoutDocx()
+    const page = await browser.newPage({ viewport: { width: 1000, height: 1400 } })
+    await page.setContent('<!doctype html><meta charset="utf-8"><div id="view"></div>')
+    await page.addScriptTag({ content: bundleJs })
+    const r = await page.evaluate(async (b64: string) => {
+      const bin = atob(b64)
+      const arr = new Uint8Array(bin.length)
+      for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const SD = (window as any).SimpleDoc
+      const doc = await SD.parse(arr.buffer)
+      SD.render(doc, document.getElementById('view'))
+      const pageEl = document.querySelector('.ssd-page') as HTMLElement
+      const footer = pageEl.querySelector('.ssd-footer') as HTMLElement
+      const fr = footer.getBoundingClientRect()
+      const findSpan = (t: string) =>
+        [...footer.querySelectorAll('span')].find(s => (s.textContent || '').trim() === t) as HTMLElement
+      const left = findSpan('LEFTSIDE').getBoundingClientRect()
+      const right = findSpan('RIGHTSIDE').getBoundingClientRect()
+      const header = pageEl.querySelector('.ssd-header') as HTMLElement
+      const hr = header.getBoundingClientRect()
+      const img = header.querySelector('img') as HTMLImageElement
+      const ir = img.getBoundingClientRect()
+      return {
+        footerW: fr.width,
+        leftStart: left.left - fr.left,
+        rightEnd: fr.right - right.right,
+        imgPos: getComputedStyle(img).position,
+        imgLeftFrac: (ir.left - hr.left) / hr.width,
+      }
+    }, b64)
+    await page.close()
+    // "LEFTSIDE" hugs the left edge; "RIGHTSIDE" hugs the right edge.
+    expect(r.leftStart).toBeLessThan(8)
+    expect(r.rightEnd).toBeLessThan(8)
+    // The logo is absolutely positioned in the right half, not inline at left.
+    expect(r.imgPos).toBe('absolute')
+    expect(r.imgLeftFrac).toBeGreaterThan(0.5)
+  }, 30_000)
+})
