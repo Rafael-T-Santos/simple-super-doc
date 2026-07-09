@@ -4,6 +4,22 @@ All notable changes to `simple-super-doc` are documented here. The format is bas
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.11.6] - 2026-07-09
+
+Map inline run/paragraph elements that were silently dropped, found by analysis
+and real docx (pandoc `unicode.docx`, `inline_formatting.docx`).
+
+### Fixed
+- **`w:sym`**: symbol characters (Insert Symbol, Wingdings/Symbol fonts) emit the
+  codepoint carrying the symbol font (guarded against an out-of-range `w:char`).
+- **`w:cr`**: a carriage return becomes a soft line break.
+- **`w:noBreakHyphen` / `w:softHyphen`**: emit U+2011 / U+00AD instead of nothing.
+- **`w:vanish`**: hidden text is no longer rendered in the final view.
+- **Paragraph shading (`pPr > w:shd`)**: a paragraph-level fill now backs the whole
+  block (run-level `w:shd` was already handled).
+- **`w:caps` / `w:smallCaps`**: rendered via `text-transform` / `font-variant`.
+- **`w:dstrike`**: double strikethrough.
+
 ## [0.11.5] - 2026-07-08
 
 Header/footer and letterhead fidelity, found by visual-diffing a real Clicksign
