@@ -56,6 +56,16 @@ export function extractRPr(rPr: Record<string, unknown> | undefined): ComputedSt
     s.strike = !(val === '0' || val === 'false' || val === 'off')
   }
 
+  // toggle run properties (present = on, unless val is a falsy toggle)
+  const toggle = (node: unknown): boolean => {
+    const val = typeof node === 'object' && node !== null ? (node as Record<string, string>).val : undefined
+    return !(val === '0' || val === 'false' || val === 'off')
+  }
+  if ('dstrike' in rPr) s.doubleStrike = toggle(rPr.dstrike)   // double strikethrough
+  if ('vanish' in rPr) s.hidden = toggle(rPr.vanish)           // hidden text
+  if ('caps' in rPr) s.caps = toggle(rPr.caps)                 // all caps
+  if ('smallCaps' in rPr) s.smallCaps = toggle(rPr.smallCaps)  // small caps
+
   // super/subscript
   if ('vertAlign' in rPr) {
     const va = (rPr.vertAlign as Record<string, string>)?.val
@@ -178,6 +188,13 @@ export function extractPPr(pPr: Record<string, unknown> | undefined): Partial<Co
   if ('bidi' in pPr) {
     const val = (pPr.bidi as Record<string, string> | undefined)?.val
     s.rtl = !(val === '0' || val === 'false' || val === 'off')
+  }
+
+  // paragraph shading (w:shd) — a background fill on the whole paragraph block
+  // (distinct from run-level w:shd, which shades only its run's text).
+  if ('shd' in pPr) {
+    const fill = (pPr.shd as Record<string, string> | undefined)?.fill
+    if (fill && fill !== 'auto') s.backgroundColor = fill
   }
 
   // paragraph borders (w:pBdr): top/bottom/left/right with sz (eighths of a pt),

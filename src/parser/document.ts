@@ -121,6 +121,8 @@ async function parseRun(
     if (brType === 'column') return null
     lineBreak = true
   }
+  // w:cr — a carriage return is a soft line break, same as <w:br/> with no type.
+  if ('cr' in r) lineBreak = true
 
   // Character style at cascade level 2 for this specific run
   const rStyleId = getVal(rPr?.rStyle as unknown)
@@ -234,6 +236,39 @@ async function parseRun(
   const segments = collectText(r.t ?? r.delText)
   const tabNode = r.tab
   const tabCount = Array.isArray(tabNode) ? tabNode.length : 'tab' in r ? 1 : 0
+
+  // Inline character-producing elements a run may carry alongside <w:t>: symbol
+  // glyphs (Insert Symbol, in a symbol font), non-breaking (U+2011) and soft
+  // (U+00AD) hyphens. A symbol is usually its own run; hyphens sit between words.
+  // The XML grouping loses their position, so weave hyphens between the first two
+  // text segments (the common "word<nbh>word" packing) and merge a symbol into
+  // the run text (carrying its symbol font when the run is symbol-only).
+  const asArray = (n: unknown): unknown[] => (Array.isArray(n) ? n : n != null ? [n] : [])
+  let symText = ''
+  let symFont: string | undefined
+  for (const sy of asArray(r.sym)) {
+    const code = parseInt(String((sy as Record<string, string>)?.char ?? ''), 16)
+    // Guard the valid Unicode range so a malformed w:char can't throw a RangeError.
+    if (code >= 0 && code <= 0x10ffff) symText += String.fromCodePoint(code)
+    symFont ??= (sy as Record<string, string>)?.font
+  }
+  const hyphens =
+    '‑'.repeat(asArray(r.noBreakHyphen).length) + '­'.repeat(asArray(r.softHyphen).length)
+  if (hyphens) {
+    if (segments.length >= 2) segments[1] = hyphens + segments[1]
+    else segments[0] = (segments[0] ?? '') + hyphens
+  }
+  if (symText) {
+    if (segments.length === 0) {
+      const style = symFont ? Object.assign({}, runStyle, { fontFamily: symFont }) : runStyle
+      return {
+        type: 'run', text: symText, style,
+        ...(href ? { href } : {}),
+        ...(lineBreak ? { lineBreak: true } : {}),
+      }
+    }
+    segments[segments.length - 1] += symText
+  }
 
   const makeRun = (text: string, tabs: number, isLast: boolean): TextRun => ({
     type: 'run', text, style: runStyle,

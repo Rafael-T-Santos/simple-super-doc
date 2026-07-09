@@ -338,3 +338,53 @@ describe('header/footer positioning', () => {
     expect(r.imgLeftFrac).toBeGreaterThan(0.5)
   }, 30_000)
 })
+
+async function buildHiddenTextDocx(): Promise<string> {
+  const body =
+    `<w:p><w:r><w:rPr><w:vanish/></w:rPr><w:t>SECRET</w:t></w:r>` +
+    `<w:r><w:t>VISIBLE</w:t></w:r></w:p>`
+  const zip = new JSZip()
+  zip.file('[Content_Types].xml',
+    `<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
+    `<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>` +
+    `<Default Extension="xml" ContentType="application/xml"/>` +
+    `<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>` +
+    `<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>`)
+  zip.file('_rels/.rels',
+    `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+    `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`)
+  zip.file('word/styles.xml',
+    `<?xml version="1.0"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
+    `<w:docDefaults><w:rPrDefault><w:rPr/></w:rPrDefault></w:docDefaults></w:styles>`)
+  zip.file('word/_rels/document.xml.rels',
+    `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+    `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`)
+  zip.file('word/document.xml',
+    `<?xml version="1.0"?><w:document ` +
+    `xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ` +
+    `xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>${body}</w:body></w:document>`)
+  const buf = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' })
+  return buf.toString('base64')
+}
+
+describe('hidden text (w:vanish)', () => {
+  it('does not render hidden text but keeps the rest', async () => {
+    const b64 = await buildHiddenTextDocx()
+    const page = await browser.newPage()
+    await page.setContent('<!doctype html><meta charset="utf-8"><div id="view"></div>')
+    await page.addScriptTag({ content: bundleJs })
+    const text = await page.evaluate(async (b64: string) => {
+      const bin = atob(b64)
+      const arr = new Uint8Array(bin.length)
+      for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const SD = (window as any).SimpleDoc
+      const doc = await SD.parse(arr.buffer)
+      SD.render(doc, document.getElementById('view'))
+      return document.getElementById('view')!.textContent ?? ''
+    }, b64)
+    await page.close()
+    expect(text).not.toContain('SECRET')
+    expect(text).toContain('VISIBLE')
+  }, 30_000)
+})

@@ -9,9 +9,12 @@ function styleToCss(s: ComputedStyle): string {
   const parts: string[] = []
   if (s.bold) parts.push('font-weight:bold')
   if (s.italic) parts.push('font-style:italic')
-  // underline and strikethrough combine into one text-decoration.
-  const deco = [s.underline ? 'underline' : '', s.strike ? 'line-through' : ''].filter(Boolean)
-  if (deco.length) parts.push(`text-decoration:${deco.join(' ')}`)
+  // underline and strikethrough combine into one text-decoration; a double
+  // strikethrough (w:dstrike) uses the double line style.
+  const deco = [s.underline ? 'underline' : '', s.strike || s.doubleStrike ? 'line-through' : ''].filter(Boolean)
+  if (deco.length) parts.push(`text-decoration:${deco.join(' ')}${s.doubleStrike && !s.underline ? ' double' : ''}`)
+  if (s.caps) parts.push('text-transform:uppercase')
+  if (s.smallCaps) parts.push('font-variant:small-caps')
   if (s.vertAlign) {
     parts.push(`vertical-align:${s.vertAlign}`)
     parts.push('font-size:0.83em') // browsers shrink super/subscript text
@@ -62,6 +65,9 @@ function renderRun(run: Run, parent: HTMLElement, skipLeadingTabs = false): void
   }
 
   const textRun = run as TextRun
+
+  // Hidden text (w:vanish) is not shown in the final view (like Word/PDF export).
+  if (textRun.style.hidden) return
 
   // Tracked deletion: hidden in the accepted/final view; shown struck through
   // (inside an <del>) when revisions are displayed.

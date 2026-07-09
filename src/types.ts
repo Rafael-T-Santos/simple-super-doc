@@ -140,6 +140,10 @@ export type ComputedStyle = {
   italic?: boolean
   underline?: boolean
   strike?: boolean       // w:strike — strikethrough
+  doubleStrike?: boolean // w:dstrike — double strikethrough
+  hidden?: boolean       // w:vanish — hidden text (not shown in the final view)
+  caps?: boolean         // w:caps — all caps (rendered via text-transform)
+  smallCaps?: boolean    // w:smallCaps — small caps
   vertAlign?: 'super' | 'sub'  // w:vertAlign — super/subscript
   fontSize?: number      // in points (pt); w:sz stores half-points → divide by 2
   fontFamily?: string    // from w:rFonts w:ascii (fallback w:hAnsi)
