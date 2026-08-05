@@ -4,6 +4,17 @@ All notable changes to `simple-super-doc` are documented here. The format is bas
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.11.8] - 2026-08-05
+
+Documentation only — no code change. The README describing the 0.11.7 ordering
+fixes landed after the 0.11.7 tag, so the package published to npm still carried
+the previous text. This release ships it.
+
+### Changed
+- README: the ordering section now mentions that order is recovered in headers,
+  footers and notes, and *within* a run; the breaks entry covers soft `<w:br/>` /
+  `<w:cr/>` and a `Ctrl+Enter` page break packed into a run alongside its text.
+
 ## [0.11.7] - 2026-08-05
 
 Line breaks now land where Word puts them, and a document containing an empty run
