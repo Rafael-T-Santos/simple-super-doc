@@ -388,3 +388,123 @@ describe('hidden text (w:vanish)', () => {
     expect(text).toContain('VISIBLE')
   }, 30_000)
 })
+
+// A table whose w:tblGrid gives two very UNEQUAL columns, with enough rows to
+// span three pages. Three, not two, because each continuation is split again
+// from the previous continuation — so the column widths have to survive being
+// carried forward more than once.
+async function buildUnequalColumnSplitTableDocx(): Promise<string> {
+  const rows: string[] = []
+  for (let i = 0; i < 16; i++) {
+    rows.push(
+      `<w:tr>` +
+        `<w:tc><w:tcPr><w:tcW w:w="1500" w:type="dxa"/></w:tcPr>` +
+        `<w:p><w:r><w:t>${i + 1}</w:t></w:r></w:p></w:tc>` +
+        `<w:tc><w:tcPr><w:tcW w:w="7500" w:type="dxa"/></w:tcPr>` +
+        `<w:p><w:r><w:t>Wide description cell for row ${i + 1}</w:t></w:r></w:p></w:tc>` +
+        `</w:tr>`,
+    )
+  }
+
+  const body =
+    `<w:tbl>` +
+    `<w:tblPr><w:tblW w:w="9000" w:type="dxa"/>` +
+    `<w:tblBorders>` +
+    `<w:top w:val="single" w:sz="4" w:color="000000"/>` +
+    `<w:left w:val="single" w:sz="4" w:color="000000"/>` +
+    `<w:bottom w:val="single" w:sz="4" w:color="000000"/>` +
+    `<w:right w:val="single" w:sz="4" w:color="000000"/>` +
+    `<w:insideH w:val="single" w:sz="4" w:color="000000"/>` +
+    `<w:insideV w:val="single" w:sz="4" w:color="000000"/>` +
+    `</w:tblBorders></w:tblPr>` +
+    // 1500 / 7500 twips — a 1:5 ratio, impossible to confuse with equal columns.
+    `<w:tblGrid><w:gridCol w:w="1500"/><w:gridCol w:w="7500"/></w:tblGrid>` +
+    rows.join('') +
+    `</w:tbl>` +
+    `<w:sectPr><w:pgSz w:w="12240" w:h="2600"/>` +
+    `<w:pgMar w:top="200" w:bottom="200" w:left="200" w:right="200"/></w:sectPr>`
+
+  const zip = new JSZip()
+  zip.file(
+    '[Content_Types].xml',
+    `<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
+      `<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>` +
+      `<Default Extension="xml" ContentType="application/xml"/>` +
+      `<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>` +
+      `<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>`,
+  )
+  zip.file(
+    '_rels/.rels',
+    `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+      `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`,
+  )
+  zip.file(
+    'word/styles.xml',
+    `<?xml version="1.0"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
+      `<w:docDefaults><w:rPrDefault><w:rPr><w:sz w:val="24"/></w:rPr></w:rPrDefault></w:docDefaults></w:styles>`,
+  )
+  zip.file(
+    'word/_rels/document.xml.rels',
+    `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+      `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`,
+  )
+  zip.file(
+    'word/document.xml',
+    `<?xml version="1.0"?><w:document ` +
+      `xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ` +
+      `xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>${body}</w:body></w:document>`,
+  )
+  const buf = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' })
+  return buf.toString('base64')
+}
+
+describe('page-aware pagination: column widths on a split table', () => {
+  it('keeps the document column widths on every continued piece', async () => {
+    const b64 = await buildUnequalColumnSplitTableDocx()
+    const page = await browser.newPage({ viewport: { width: 1000, height: 1400 } })
+    await page.setContent('<!doctype html><meta charset="utf-8"><div id="view"></div>')
+    await page.addScriptTag({ content: bundleJs })
+    const pieces = await page.evaluate(async (b64: string) => {
+      const bin = atob(b64)
+      const arr = new Uint8Array(bin.length)
+      for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const SD = (window as any).SimpleDoc
+      const doc = await SD.parse(arr.buffer)
+      SD.render(doc, document.getElementById('view'))
+      // Only the real page boxes — the hidden staging div also carries .ssd-page.
+      const pages = Array.from(document.querySelectorAll('.ssd-page')) as HTMLElement[]
+      const out: { hasColgroup: boolean; widths: number[] }[] = []
+      for (const pg of pages) {
+        if (pg.style.visibility === 'hidden') continue
+        for (const t of Array.from(pg.querySelectorAll('table'))) {
+          const first = (t as HTMLTableElement).rows[0]
+          if (!first) continue
+          out.push({
+            hasColgroup: !!t.querySelector('colgroup'),
+            widths: Array.from(first.cells).map(c => Math.round(c.getBoundingClientRect().width)),
+          })
+        }
+      }
+      return out
+    }, b64)
+    await page.close()
+
+    // The table must actually split more than once, or the regression can't show.
+    expect(pieces.length).toBeGreaterThanOrEqual(3)
+
+    const [firstPiece, ...continued] = pieces
+    expect(firstPiece.widths).toHaveLength(2)
+    // 1500:7500 is 1:5 — the narrow column must stay clearly narrower.
+    expect(firstPiece.widths[0]).toBeLessThan(firstPiece.widths[1] / 2)
+
+    // Every continuation must match the first piece. Before the fix, the shallow
+    // cloneNode(false) dropped <colgroup> while keeping table-layout:fixed, so a
+    // continued piece split its width equally (e.g. [339,339] instead of
+    // [124,556]) and the columns visibly changed shape mid-table.
+    for (const piece of continued) {
+      expect(piece.hasColgroup).toBe(true)
+      expect(piece.widths).toEqual(firstPiece.widths)
+    }
+  }, 30_000)
+})

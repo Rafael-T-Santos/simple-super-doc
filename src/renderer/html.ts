@@ -624,6 +624,15 @@ function splitTableRows(table: HTMLTableElement, availH: number): HTMLTableEleme
   }
   if (splitAt === 0 || splitAt >= rows.length) return null
   const rest = table.cloneNode(false) as HTMLTableElement
+  // cloneNode(false) copies the table's attributes (so table-layout:fixed and the
+  // absolute width survive) but NOT its children — including <colgroup>. A fixed
+  // layout with no column definitions splits the width EQUALLY, so the continued
+  // piece lost the document's column widths. Carry the colgroup over, before the
+  // rows (HTML requires that order) and deep so the <col> widths come with it.
+  // It must land on `rest` itself, not just the first piece: a table spanning
+  // three or more pages splits again from `rest`.
+  const colgroup = table.querySelector('colgroup')
+  if (colgroup) rest.appendChild(colgroup.cloneNode(true))
   for (let i = splitAt; i < rows.length; i++) rest.appendChild(rows[i])
   return rest
 }
