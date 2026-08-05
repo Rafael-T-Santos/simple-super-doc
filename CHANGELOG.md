@@ -4,6 +4,34 @@ All notable changes to `simple-super-doc` are documented here. The format is bas
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.12.0] - 2026-08-05
+
+Heading rows now repeat when a table breaks across pages, and three more places
+where a run's own text was being thrown away are fixed.
+
+### Added
+- **Repeating table heading rows (`w:tblHeader`).** A row marked as a heading in
+  Word now repeats at the top of every page the table continues onto, instead of
+  appearing only on the first. `TableRow.isHeader` exposes the flag on the IR.
+
+### Fixed
+- **Text next to a text box is no longer lost.** A text box nests a whole
+  paragraph inside the run that carries it, and the paragraph's raw XML was being
+  cut short at the text box's own paragraph end. Anything after that point in the
+  enclosing paragraph lost its document order, and text sharing a run with the
+  text box was dropped entirely.
+- **Text around a footnote reference survives.** `<w:t>before</w:t>
+  <w:footnoteReference/><w:t>after</w:t>` in one run rendered as just the
+  reference marker; both pieces of text were dropped. Several references in one
+  run are each placed correctly and numbered in document order.
+- **A footnote's own text is no longer lost.** When Word packs the note's
+  auto-number marker and the note text into the same run, the marker stood for the
+  whole run and the note came out empty.
+
+### Changed
+- The demo's version badge is taken from `package.json` when the site is built,
+  so it tracks releases instead of drifting (it had read v0.11.0 since then).
+
 ## [0.11.9] - 2026-08-05
 
 Two content and layout fixes found in a real contract: a table changed shape at a
