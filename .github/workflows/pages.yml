@@ -37,6 +37,15 @@ jobs:
       - name: Version the demo bundle URL
         run: sed -i "s|index.global.js|index.global.js?v=${GITHUB_SHA}|g" demo/index.html
 
+      # The badge was hand-edited and drifted (it read v0.11.0 at 0.11.9). Take it
+      # from package.json at deploy time so it tracks releases on its own.
+      - name: Stamp the version badge
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./package.json').version")
+          sed -i "s|<span class=\"badge\" id=\"version\">[^<]*</span>|<span class=\"badge\" id=\"version\">v${VERSION}</span>|" demo/index.html
+          grep -o '<span class="badge" id="version">[^<]*</span>' demo/index.html
+
       - uses: actions/configure-pages@v4
 
       - uses: actions/upload-pages-artifact@v3
