@@ -52,7 +52,9 @@ non-docx or malformed input.
   cascade: table style → `tblBorders` → `tcBorders`, so borders that come only
   from a table style like `TableGrid` are drawn), and block/run ordering
   recovered from the raw XML (paragraphs, tables, mid-paragraph hyperlinks and
-  tracked changes keep their real sequence — in the body **and inside cells**).
+  tracked changes keep their real sequence — in the body, **inside cells**, and
+  in headers, footers and notes). Ordering is recovered *within* a run too, so a
+  break or tab packed alongside text lands where Word put it.
 - **Images** — inline and anchored DrawingML (`a:blip`) and legacy VML
   (`w:pict`/`v:imagedata`), as base64 data URLs; external/linked images
   (`r:link`) render from their URL. (EMF/WMF metafiles are skipped — browsers
@@ -64,7 +66,9 @@ non-docx or malformed input.
   in the page margins on every page; distinct per section, with a section that
   declares none inheriting the previous section's (OOXML semantics); distinct
   first-page (`w:titlePg`) and even-page (`w:evenAndOddHeaders`) variants.
-- **Page breaks** — `w:pageBreakBefore` and explicit `<w:br w:type="page"/>`.
+- **Page & line breaks** — `w:pageBreakBefore` and explicit `<w:br w:type="page"/>`
+  (including a `Ctrl+Enter` break packed into the same run as the surrounding
+  text), plus soft breaks `<w:br/>` and `<w:cr/>`.
 - **Tab stops** — right/center/decimal stops with dot/hyphen/underscore leaders
   (table-of-contents rows render as `Title …… 12`).
 - **Fields** — `PAGE` and `NUMPAGES` resolve live (robust to `\* MERGEFORMAT`
