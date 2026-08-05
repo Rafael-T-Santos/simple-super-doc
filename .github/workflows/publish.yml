@@ -14,6 +14,36 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The tag is what gets packed and published, so anything wrong with it is
+      # permanent once npm accepts the version. These two checks are the cheap
+      # ones worth making before that point.
+      #
+      # NOTE: this step deliberately does NOT compare the tag's docs against
+      # main. At the moment this job runs, main and the tag are the same commit
+      # — a doc commit pushed a minute later is still in the future here, so
+      # such a check would pass and publish stale docs anyway. Detecting that
+      # is docs-freshness.yml's job, which watches main instead.
+      - name: Verify tag matches package version and CHANGELOG
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          TAG_VERSION="${TAG#v}"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::Tag $TAG implies version $TAG_VERSION but package.json says $PKG_VERSION."
+            echo "The tag must point at the commit npm version created. Delete the tag, fix, re-tag."
+            exit 1
+          fi
+
+          if ! grep -qF "## [$PKG_VERSION]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '## [$PKG_VERSION]' entry."
+            echo "Add the entry, then re-tag — the published release notes come from this file."
+            exit 1
+          fi
+
+          echo "Tag $TAG, package.json $PKG_VERSION, CHANGELOG entry present."
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20

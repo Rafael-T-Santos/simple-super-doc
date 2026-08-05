@@ -1,0 +1,106 @@
+name: Docs freshness
+
+# npm ALWAYS packs README.md into the tarball, regardless of the `files` field in
+# package.json. The publish workflow builds from the v* tag, so a doc commit that
+# lands on main AFTER the tag is not in the published package — npmjs.com keeps
+# showing the old text until the next release. That happened with v0.11.7: the
+# README commit landed 57 seconds after the publish job had already started.
+#
+# A check inside the publish workflow cannot catch this: when it runs, main and
+# the tag are the same commit and the doc commit is still in the future. So the
+# detection has to watch main instead, which is what this does.
+#
+# This is INFORMATIONAL and never fails. Docs drifting ahead of the last release
+# is normal and expected between releases — the point is to make the state
+# visible the moment it appears, so a doc commit that was meant for the release
+# that just went out gets noticed while it's still cheap to re-tag.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'README.md'
+      - 'CHANGELOG.md'
+      - '.github/workflows/docs-freshness.yml'  # self-test when this check changes
+  workflow_dispatch:
+
+jobs:
+  docs-freshness:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # need full history + tags to diff against the last release
+
+      - name: Compare docs against the last published tag
+        run: |
+          set -euo pipefail
+          DOCS="README.md CHANGELOG.md"
+
+          LATEST_TAG="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
+          if [ -z "$LATEST_TAG" ]; then
+            echo "No v* tag yet — nothing published to fall behind."
+            exit 0
+          fi
+
+          DRIFTED=""
+          for f in $DOCS; do
+            if [ -e "$f" ] && ! git diff --quiet "$LATEST_TAG" HEAD -- "$f"; then
+              DRIFTED="$DRIFTED $f"
+            fi
+          done
+
+          if [ -z "$DRIFTED" ]; then
+            echo "In sync: $DOCS match $LATEST_TAG."
+            echo "### Docs freshness: in sync with \`$LATEST_TAG\`" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # Drifted. Report which files and which commits, so the fix is obvious.
+          TAG_TIME="$(git log -1 --format=%ct "$LATEST_TAG")"
+
+          {
+            echo "### Docs freshness: ahead of \`$LATEST_TAG\`"
+            echo
+            echo "The package published as \`$LATEST_TAG\` does **not** contain these doc changes."
+            echo "npmjs.com will show the older text until the next release."
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          MISSED_RELEASE=0
+          for f in $DRIFTED; do
+            echo "::warning file=$f::Changed since $LATEST_TAG — not in the published package."
+            {
+              echo "**\`$f\`** — commits since \`$LATEST_TAG\`:"
+              echo
+              echo '```'
+              git log --format='%h %cI %s' "$LATEST_TAG..HEAD" -- "$f"
+              echo '```'
+              echo
+            } >> "$GITHUB_STEP_SUMMARY"
+
+            # A doc commit landing within an hour of the release commit almost
+            # certainly belonged to that release and simply missed the tag.
+            # Herestring, not a pipe: a pipe would run the loop in a subshell and
+            # the MISSED_RELEASE assignment would be lost.
+            while read -r ts; do
+              if [ -n "$ts" ] && [ "$((ts - TAG_TIME))" -lt 3600 ]; then
+                MISSED_RELEASE=1
+              fi
+            done <<< "$(git log --format=%ct "$LATEST_TAG..HEAD" -- "$f")"
+          done
+
+          if [ "$MISSED_RELEASE" -eq 1 ]; then
+            echo "::warning::Doc changes landed within an hour of $LATEST_TAG — they likely belonged to that release."
+            {
+              echo "> **Likely missed its release.** These landed within an hour of \`$LATEST_TAG\`."
+              echo "> If they were meant for it, cut a docs-only patch release so npm picks them up."
+              echo "> Next time commit docs *before* \`npm version\` — the tag is what gets packed."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "> Normal drift — these will ship with the next release."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
