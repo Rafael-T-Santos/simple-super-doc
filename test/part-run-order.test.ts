@@ -169,3 +169,59 @@ describe('tracked deletions keep break order', () => {
     expect(p.runs.every(r => (r as TextRun).deleted)).toBe(true)
   })
 })
+
+// A footnote reference, and a note's own auto-number marker, are inline children
+// like any other. Each used to stand for the WHOLE run, so text sharing the run
+// was dropped: the reference lost the sentence around it, and the marker lost the
+// note's own text.
+describe('note markers sharing a run with text', () => {
+  const withSeparator = (notes: string): string =>
+    `<w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote>` + notes
+  // Word packs the marker and the note text into one run in this shape.
+  const note = (id: number, text: string): string =>
+    `<w:footnote w:id="${id}"><w:p><w:r><w:footnoteRef/><w:t xml:space="preserve">${text}</w:t></w:r></w:p></w:footnote>`
+
+  it('keeps the text around a footnote reference in the same run', async () => {
+    const doc = await parse(await buildDocx({
+      bodyXml: `<w:p><w:r><w:t>ANTES</w:t><w:footnoteReference w:id="2"/><w:t>DEPOIS</w:t></w:r></w:p>`,
+      footnotesXml: withSeparator(note(2, ' the note body')),
+    }))
+    const p = doc.blocks[0] as ParagraphBlock
+    expect(texts(p)).toEqual(['ANTES', '1', 'DEPOIS'])
+    expect((p.runs[1] as TextRun).noteRef).toEqual({ type: 'footnote', number: 1 })
+  })
+
+  it('numbers several references in one run in document order', async () => {
+    const doc = await parse(await buildDocx({
+      bodyXml:
+        `<w:p><w:r><w:t>x</w:t><w:footnoteReference w:id="2"/>` +
+        `<w:t>y</w:t><w:footnoteReference w:id="3"/><w:t>z</w:t></w:r></w:p>`,
+      footnotesXml: withSeparator(note(2, ' first') + note(3, ' second')),
+    }))
+    expect(texts(doc.blocks[0] as ParagraphBlock)).toEqual(['x', '1', 'y', '2', 'z'])
+    // The numbering follows document order, and each number maps to its own note.
+    expect(doc.footnotes!.map(f => f.number)).toEqual([1, 2])
+    expect(texts(doc.footnotes![0].blocks[0] as ParagraphBlock).join('')).toBe(' first')
+    expect(texts(doc.footnotes![1].blocks[0] as ParagraphBlock).join('')).toBe(' second')
+  })
+
+  it("keeps a note's text when it shares the run with the auto-number marker", async () => {
+    const doc = await parse(await buildDocx({
+      bodyXml: `<w:p><w:r><w:t>ref</w:t></w:r><w:r><w:footnoteReference w:id="2"/></w:r></w:p>`,
+      footnotesXml: withSeparator(note(2, ' note text that must survive')),
+    }))
+    const body = texts(doc.footnotes![0].blocks[0] as ParagraphBlock).join('')
+    expect(body).toBe(' note text that must survive')
+    // The marker itself renders nothing — the note list carries the number.
+    expect(body).not.toContain('1')
+  })
+
+  it('GUARD a marker-only run still contributes nothing', async () => {
+    const doc = await parse(await buildDocx({
+      bodyXml: `<w:p><w:r><w:t>ref</w:t></w:r><w:r><w:footnoteReference w:id="2"/></w:r></w:p>`,
+      footnotesXml: withSeparator(
+        `<w:footnote w:id="2"><w:p><w:r><w:footnoteRef/></w:r><w:r><w:t>body</w:t></w:r></w:p></w:footnote>`),
+    }))
+    expect(texts(doc.footnotes![0].blocks[0] as ParagraphBlock)).toEqual(['body'])
+  })
+})
