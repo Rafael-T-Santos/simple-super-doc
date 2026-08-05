@@ -485,6 +485,10 @@ function renderTable(block: TableBlock, container: HTMLElement): void {
   const pad = block.cellPadding
   for (const row of block.rows) {
     const tr = document.createElement('tr')
+    // w:tblHeader: marked so a continuation piece can repeat it (see
+    // buildContinuationTable). A data attribute rather than <thead> keeps the
+    // existing flat row structure the paginator walks.
+    if (row.isHeader) tr.dataset.ssdHeader = '1'
     // w:trHeight: `height` on a table row acts as a MINIMUM (the row still grows
     // to fit content), which matches the common "atLeast" rule.
     if (row.heightPx) tr.style.height = `${row.heightPx}px`
@@ -623,17 +627,57 @@ function splitTableRows(table: HTMLTableElement, availH: number): HTMLTableEleme
     splitAt = i + 1
   }
   if (splitAt === 0 || splitAt >= rows.length) return null
+  const rest = buildContinuationTable(table, splitAt)
+  for (let i = splitAt; i < rows.length; i++) rest.appendChild(rows[i])
+  return rest
+}
+
+// The leading w:tblHeader rows of a rendered table, in order. Only a LEADING run
+// of header rows repeats — a header flag on a row in the middle of the body is
+// not a heading Word would carry to the next page.
+function headerRowsOf(table: HTMLTableElement): HTMLTableRowElement[] {
+  const heads: HTMLTableRowElement[] = []
+  for (const row of Array.from(table.rows)) {
+    if (row.dataset.ssdHeader !== '1') break
+    heads.push(row)
+  }
+  return heads
+}
+
+// Everything a continued piece must inherit from the table it was split from.
+// This is the ONE place to add the next such thing — the split path has lost
+// per-piece state three times (footnote refs, column widths, heading rows), each
+// time because a new ad hoc clone forgot something.
+//
+// `splitAt` is where the body was cut, and it decides whether heading rows are
+// repeated. Repeating them is only correct — and only TERMINATES — when the cut
+// lands past them: the caller loops until the continuation is strictly smaller,
+// so prepending N header rows to a piece that already starts inside the header
+// block would grow it back and spin forever.
+function buildContinuationTable(table: HTMLTableElement, splitAt: number): HTMLTableElement {
   const rest = table.cloneNode(false) as HTMLTableElement
-  // cloneNode(false) copies the table's attributes (so table-layout:fixed and the
+
+  // cloneNode(false) copies the table's ATTRIBUTES (so table-layout:fixed and the
   // absolute width survive) but NOT its children — including <colgroup>. A fixed
-  // layout with no column definitions splits the width EQUALLY, so the continued
-  // piece lost the document's column widths. Carry the colgroup over, before the
-  // rows (HTML requires that order) and deep so the <col> widths come with it.
-  // It must land on `rest` itself, not just the first piece: a table spanning
-  // three or more pages splits again from `rest`.
+  // layout with no column definitions splits the width EQUALLY, so without this
+  // the continued piece lost the document's column widths. Deep, and before the
+  // rows: HTML requires colgroup first.
   const colgroup = table.querySelector('colgroup')
   if (colgroup) rest.appendChild(colgroup.cloneNode(true))
-  for (let i = splitAt; i < rows.length; i++) rest.appendChild(rows[i])
+
+  const heads = headerRowsOf(table)
+  if (splitAt > heads.length) {
+    for (const head of heads) {
+      const copy = head.cloneNode(true) as HTMLTableRowElement
+      // A repeated heading must not re-register its footnotes: the id is what
+      // footnoteNumbersIn counts and what the note's back-link targets, so a
+      // clone would render the note again on every continuation page and
+      // duplicate the anchor. The visible marker stays; only the id goes.
+      const refs = copy.querySelectorAll('sup[id^="fnref-"], sup[id^="enref-"]')
+      for (const sup of Array.from(refs)) sup.removeAttribute('id')
+      rest.appendChild(copy)
+    }
+  }
   return rest
 }
 

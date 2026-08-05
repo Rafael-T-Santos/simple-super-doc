@@ -92,3 +92,34 @@ describe('run order inside table cells', () => {
     expect(p.runs.map(r => (r as TextRun).text)).toEqual(['n ', 'IN', ' end'])
   })
 })
+
+// w:tblHeader marks a heading row for repetition across page breaks. Like the
+// other toggle properties it can be explicitly switched off, and an off value
+// must NOT mark the row (that would repeat a body row on every page).
+describe('w:tblHeader parsing', () => {
+  const table = (trPr: string): string =>
+    `<w:tbl><w:tblGrid><w:gridCol w:w="4000"/></w:tblGrid>` +
+    `<w:tr>${trPr}<w:tc><w:p><w:r><w:t>head</w:t></w:r></w:p></w:tc></w:tr>` +
+    `<w:tr><w:tc><w:p><w:r><w:t>body</w:t></w:r></w:p></w:tc></w:tr></w:tbl>`
+
+  const firstRowIsHeader = async (trPr: string): Promise<boolean | undefined> => {
+    const doc = await parse(await buildDocx(table(trPr)))
+    return (doc.blocks[0] as TableBlock).rows[0].isHeader
+  }
+
+  it('marks the row when w:tblHeader is present', async () => {
+    expect(await firstRowIsHeader(`<w:trPr><w:tblHeader/></w:trPr>`)).toBe(true)
+  })
+
+  it('marks the row for an explicit on value', async () => {
+    expect(await firstRowIsHeader(`<w:trPr><w:tblHeader w:val="true"/></w:trPr>`)).toBe(true)
+  })
+
+  it.each(['0', 'false', 'off'])('does NOT mark the row for w:val="%s"', async (val) => {
+    expect(await firstRowIsHeader(`<w:trPr><w:tblHeader w:val="${val}"/></w:trPr>`)).toBeUndefined()
+  })
+
+  it('leaves an ordinary row unmarked', async () => {
+    expect(await firstRowIsHeader('')).toBeUndefined()
+  })
+})

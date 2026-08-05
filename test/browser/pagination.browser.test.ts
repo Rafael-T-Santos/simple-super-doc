@@ -508,3 +508,143 @@ describe('page-aware pagination: column widths on a split table', () => {
     }
   }, 30_000)
 })
+
+// w:tblHeader marks a heading row that Word repeats at the top of every page the
+// table continues onto. Building the continuation is the third thing this path
+// has had to carry over (footnote refs, column widths, now heading rows), so it
+// lives in one place: buildContinuationTable.
+async function buildRepeatingHeaderDocx(
+  bodyRows: number,
+  headerText: string,
+  pageHeight = 2600,
+  headerFootnote = false,
+): Promise<string> {
+  const noteRef = headerFootnote
+    ? `<w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:footnoteReference w:id="2"/></w:r>`
+    : ''
+  const rows: string[] = [
+    `<w:tr><w:trPr><w:tblHeader/></w:trPr>` +
+      `<w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/></w:tcPr>` +
+      `<w:p><w:r><w:t>${headerText}</w:t></w:r>${noteRef}</w:p></w:tc>` +
+      `<w:tc><w:tcPr><w:tcW w:w="6000" w:type="dxa"/></w:tcPr>` +
+      `<w:p><w:r><w:t>HEAD-B</w:t></w:r></w:p></w:tc></w:tr>`,
+  ]
+  for (let i = 0; i < bodyRows; i++) {
+    rows.push(
+      `<w:tr><w:tc><w:p><w:r><w:t>R${i + 1}</w:t></w:r></w:p></w:tc>` +
+        `<w:tc><w:p><w:r><w:t>body ${i + 1}</w:t></w:r></w:p></w:tc></w:tr>`,
+    )
+  }
+  const body =
+    `<w:tbl><w:tblPr><w:tblW w:w="9000" w:type="dxa"/><w:tblBorders>` +
+    `<w:top w:val="single" w:sz="4" w:color="000000"/><w:left w:val="single" w:sz="4" w:color="000000"/>` +
+    `<w:bottom w:val="single" w:sz="4" w:color="000000"/><w:right w:val="single" w:sz="4" w:color="000000"/>` +
+    `<w:insideH w:val="single" w:sz="4" w:color="000000"/><w:insideV w:val="single" w:sz="4" w:color="000000"/>` +
+    `</w:tblBorders></w:tblPr>` +
+    `<w:tblGrid><w:gridCol w:w="3000"/><w:gridCol w:w="6000"/></w:tblGrid>` +
+    rows.join('') + `</w:tbl>` +
+    `<w:sectPr><w:pgSz w:w="12240" w:h="${pageHeight}"/>` +
+    `<w:pgMar w:top="200" w:bottom="200" w:left="200" w:right="200"/></w:sectPr>`
+
+  const zip = new JSZip()
+  const notesOverride = headerFootnote
+    ? `<Override PartName="/word/footnotes.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml"/>`
+    : ''
+  zip.file('[Content_Types].xml',
+    `<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
+      `<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>` +
+      `<Default Extension="xml" ContentType="application/xml"/>` +
+      `<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>` +
+      `<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>` +
+      notesOverride + `</Types>`)
+  zip.file('_rels/.rels',
+    `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+      `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`)
+  zip.file('word/styles.xml',
+    `<?xml version="1.0"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
+      `<w:docDefaults><w:rPrDefault><w:rPr><w:sz w:val="24"/></w:rPr></w:rPrDefault></w:docDefaults></w:styles>`)
+  if (headerFootnote) {
+    zip.file('word/footnotes.xml',
+      `<?xml version="1.0"?><w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
+        `<w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote>` +
+        `<w:footnote w:id="2"><w:p><w:r><w:t>the heading note</w:t></w:r></w:p></w:footnote></w:footnotes>`)
+  }
+  zip.file('word/_rels/document.xml.rels',
+    `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+      `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>` +
+      (headerFootnote
+        ? `<Relationship Id="rId7" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes" Target="footnotes.xml"/>`
+        : '') +
+      `</Relationships>`)
+  zip.file('word/document.xml',
+    `<?xml version="1.0"?><w:document ` +
+      `xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ` +
+      `xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>${body}</w:body></w:document>`)
+  return (await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' })).toString('base64')
+}
+
+async function headerTablePieces(b64: string) {
+  const page = await browser.newPage({ viewport: { width: 1000, height: 1400 } })
+  await page.setContent('<!doctype html><meta charset="utf-8"><div id="view"></div>')
+  await page.addScriptTag({ content: bundleJs })
+  const result = await page.evaluate(async (b64: string) => {
+    const bin = atob(b64)
+    const arr = new Uint8Array(bin.length)
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const SD = (window as any).SimpleDoc
+    SD.render(await SD.parse(arr.buffer), document.getElementById('view'))
+    const pieces: { rows: number; firstCell: string; headers: number; widths: number[] }[] = []
+    for (const pg of Array.from(document.querySelectorAll('.ssd-page')) as HTMLElement[]) {
+      if (pg.style.visibility === 'hidden') continue
+      for (const t of Array.from(pg.querySelectorAll('table')) as HTMLTableElement[]) {
+        pieces.push({
+          rows: t.rows.length,
+          firstCell: t.rows[0]?.cells[0]?.textContent ?? '',
+          headers: t.querySelectorAll('tr[data-ssd-header]').length,
+          widths: Array.from(t.rows[0]?.cells ?? []).map(c => Math.round(c.getBoundingClientRect().width)),
+        })
+      }
+    }
+    return {
+      pieces,
+      fnrefIds: document.querySelectorAll('sup[id^="fnref-"]').length,
+      fnBoxes: document.querySelectorAll('.ssd-footnotes').length,
+    }
+  }, b64)
+  await page.close()
+  return result
+}
+
+describe('page-aware pagination: repeating heading rows (w:tblHeader)', () => {
+  it('repeats the heading row on every continued piece', async () => {
+    const { pieces } = await headerTablePieces(await buildRepeatingHeaderDocx(18, 'HEAD-A'))
+    expect(pieces.length).toBeGreaterThanOrEqual(3)
+    for (const piece of pieces) {
+      expect(piece.firstCell).toBe('HEAD-A')
+      expect(piece.headers).toBe(1)
+      // The repeated heading and the carried column widths coexist.
+      expect(piece.widths[0]).toBeLessThan(piece.widths[1])
+    }
+  }, 30_000)
+
+  it('does not register the heading footnote again on each continuation', async () => {
+    const { pieces, fnrefIds, fnBoxes } = await headerTablePieces(
+      await buildRepeatingHeaderDocx(18, 'HEAD-A', 2600, true))
+    expect(pieces.length).toBeGreaterThanOrEqual(2)
+    // The reference id lives on the ORIGINAL heading only. A repeated heading
+    // keeps the visible marker but drops the id, so the note is not counted (and
+    // rendered) once per page, and the back-link anchor stays unique.
+    expect(fnrefIds).toBe(1)
+    expect(fnBoxes).toBe(1)
+  }, 30_000)
+
+  it('terminates when the heading alone overflows the page', async () => {
+    // The paginator loops until the continuation is strictly smaller. Repeating a
+    // heading taller than the page would grow it back — so the repeat is skipped
+    // when the cut lands inside the heading block.
+    const { pieces } = await headerTablePieces(
+      await buildRepeatingHeaderDocx(6, 'HEAD '.repeat(300), 900))
+    expect(pieces.length).toBeGreaterThan(0)
+  }, 30_000)
+})

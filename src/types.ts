@@ -105,6 +105,7 @@ export type TableRow = {
   cells: TableCell[]
   heightPx?: number  // row height from w:trHeight (twips → px)
   heightExact?: boolean  // w:hRule="exact" (fixed height) vs the default "atLeast" (minimum)
+  isHeader?: boolean  // w:tblHeader — a heading row, repeated when the table splits across pages
 }
 
 export type TableCell = {
