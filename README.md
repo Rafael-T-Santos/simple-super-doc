@@ -54,7 +54,9 @@ non-docx or malformed input.
   recovered from the raw XML (paragraphs, tables, mid-paragraph hyperlinks and
   tracked changes keep their real sequence — in the body, **inside cells**, and
   in headers, footers and notes). Ordering is recovered *within* a run too, so a
-  break or tab packed alongside text lands where Word put it.
+  break, tab or inline image packed alongside text lands where Word put it —
+  including a table that splits across pages, whose continued piece keeps the
+  document's column widths.
 - **Images** — inline and anchored DrawingML (`a:blip`) and legacy VML
   (`w:pict`/`v:imagedata`), as base64 data URLs; external/linked images
   (`r:link`) render from their URL. (EMF/WMF metafiles are skipped — browsers

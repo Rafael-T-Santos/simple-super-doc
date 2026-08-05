@@ -4,6 +4,24 @@ All notable changes to `simple-super-doc` are documented here. The format is bas
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.11.9] - 2026-08-05
+
+Two content and layout fixes found in a real contract: a table changed shape at a
+page break, and text sharing a run with an image disappeared.
+
+### Fixed
+- **A table that breaks across pages keeps its column widths.** The continued
+  piece on the next page was rebuilt without the document's column definitions,
+  so its columns came out all the same width while the first page showed them
+  correctly. Measured on a real document: a 124px/556px pair rendered as
+  339px/339px after the break. Tables spanning three or more pages are covered
+  too, since each continuation is split again from the previous one.
+- **Text is no longer lost when an image sits in the same run.** Word and Google
+  Docs both write `<w:t>…</w:t><w:drawing/><w:t>…</w:t>` inside a single run. The
+  image was treated as the whole run, so the text on both sides of it vanished.
+  The image now lands between the texts, in document order, and several images in
+  one run are each placed correctly.
+
 ## [0.11.8] - 2026-08-05
 
 Documentation only — no code change. The README describing the 0.11.7 ordering
