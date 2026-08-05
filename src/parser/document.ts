@@ -135,6 +135,8 @@ async function parseRun(
   const rawSegments = collectText(r.t ?? r.delText)
   const tabCount = Array.isArray(r.tab) ? r.tab.length : 'tab' in r ? 1 : 0
   const symList = asArray(r.sym)
+  const drawingList = asArray(r.drawing)
+  const pictList = asArray(r.pict)
   const scanned = runXml ? getRunChildOrder(runXml) : undefined
   const countOf = (k: RunPart['kind']): number => (scanned ?? []).filter(p => p.kind === k).length
   const orderedParts =
@@ -143,7 +145,9 @@ async function parseRun(
     countOf('tab') === tabCount &&
     countOf('sym') === symList.length &&
     countOf('noBreakHyphen') === asArray(r.noBreakHyphen).length &&
-    countOf('softHyphen') === asArray(r.softHyphen).length
+    countOf('softHyphen') === asArray(r.softHyphen).length &&
+    countOf('drawing') === drawingList.length &&
+    countOf('pict') === pictList.length
       ? scanned
       : undefined
 
@@ -197,9 +201,9 @@ async function parseRun(
     return marker
   }
 
-  // Image via drawing
-  if ('drawing' in r) {
-    const drawing = r.drawing as Record<string, unknown>
+  // Image via drawing. Built per occurrence so the ordered path below can place
+  // an image BETWEEN the texts of the same run instead of replacing the run.
+  const buildDrawing = async (drawing: Record<string, unknown>): Promise<ImageRun | null> => {
     const anchor = drawing.anchor as Record<string, unknown> | undefined
     const inline = drawing.inline as Record<string, unknown> | undefined
     const isPageBackground = !inline && !!anchor && String(anchor.behindDoc ?? '0') === '1'
@@ -247,23 +251,28 @@ async function parseRun(
   // r:id="..."/></v:shape></w:pict>. The legacy image form (older Word, some
   // producers). A pict with no imagedata is a VML text box — its text is
   // recovered separately (collectTxbxContent), so this run renders nothing.
-  if ('pict' in r) {
-    const vml = findVmlImage(r.pict)
-    if (vml) {
-      const resolved = await resolveImage(vml.id, ctx.relationshipMap, ctx.zip)
-      if (resolved) {
-        const ptToPx = (pt: string | undefined): number =>
-          pt ? Math.round((parseFloat(pt) * 96) / 72) : 0
-        return {
-          type: 'image',
-          src: resolved.src,
-          widthPx: ptToPx(/width:([\d.]+)pt/.exec(vml.style ?? '')?.[1]),
-          heightPx: ptToPx(/height:([\d.]+)pt/.exec(vml.style ?? '')?.[1]),
-          ...(href ? { href } : {}),
-        }
-      }
+  const buildPict = async (pict: unknown): Promise<ImageRun | null> => {
+    const vml = findVmlImage(pict)
+    if (!vml) return null
+    const resolved = await resolveImage(vml.id, ctx.relationshipMap, ctx.zip)
+    if (!resolved) return null
+    const ptToPx = (pt: string | undefined): number =>
+      pt ? Math.round((parseFloat(pt) * 96) / 72) : 0
+    return {
+      type: 'image',
+      src: resolved.src,
+      widthPx: ptToPx(/width:([\d.]+)pt/.exec(vml.style ?? '')?.[1]),
+      heightPx: ptToPx(/height:([\d.]+)pt/.exec(vml.style ?? '')?.[1]),
+      ...(href ? { href } : {}),
     }
-    return null
+  }
+
+  // Without recovered order an image has to stand for the whole run, which drops
+  // any text sharing it. With order, fall through so the ordered path can place
+  // the image between the texts.
+  if (!orderedParts) {
+    if ('drawing' in r) return await buildDrawing(asRunObject(r.drawing))
+    if ('pict' in r) return await buildPict(r.pict)
   }
 
   // Text run(s). A tracked-deletion run carries its text in <w:delText> instead
@@ -288,7 +297,7 @@ async function parseRun(
     let text = ''
     let tabs = 0
     let started = false // a text/sym/hyphen part has opened the current run
-    let ti = 0, syi = 0
+    let ti = 0, syi = 0, di = 0, pi = 0
     let font: string | undefined
     const flush = (withBreak: boolean): void => {
       if (!started && !withBreak && tabs === 0) return
@@ -328,13 +337,29 @@ async function parseRun(
           out.push({ type: 'run', text: '', style: runStyle, pageBreak: true })
           break
         case 'columnBreak': break // no place in the single-column flow — dropped
+        case 'drawing': {
+          flush(false)
+          const img = await buildDrawing(asRunObject(drawingList[di++]))
+          if (img) out.push(img)
+          break
+        }
+        case 'pict': {
+          flush(false)
+          const img = await buildPict(pictList[pi++])
+          if (img) out.push(img)
+          break
+        }
       }
     }
     flush(false)
     if (out.length === 0) {
-      // A run holding only a column break contributes nothing to a single-column
-      // flow — drop it entirely rather than leaving an empty run behind.
-      if (orderedParts.some(p => p.kind === 'columnBreak')) return null
+      // Nothing survived. A column break has no place in a single-column flow,
+      // and a drawing/pict that resolved to no image (an unresolvable rId, or a
+      // VML text box whose text is recovered separately) renders nothing — drop
+      // the run entirely rather than leaving an empty one behind.
+      const dropped = orderedParts.some(
+        p => p.kind === 'columnBreak' || p.kind === 'drawing' || p.kind === 'pict')
+      if (dropped) return null
       return { type: 'run', text: '', style: runStyle, ...(href ? { href } : {}) }
     }
     return out.length === 1 ? out[0] : out
@@ -1120,21 +1145,48 @@ type RunPart =
   | { kind: 'text' } | { kind: 'tab' } | { kind: 'sym' }
   | { kind: 'noBreakHyphen' } | { kind: 'softHyphen' }
   | { kind: 'lineBreak' } | { kind: 'pageBreak' } | { kind: 'columnBreak' }
-function getRunChildOrder(runXml: string): RunPart[] | undefined {
-  // A drawing/pict subtree can nest whole paragraphs (a text box), whose <w:t>
-  // must not be mistaken for this run's text. Those runs return early in
-  // parseRun anyway, so decline rather than scan them.
-  if (/<w:(drawing|pict|txbxContent)[\s>]/.test(runXml)) return undefined
+  | { kind: 'drawing' } | { kind: 'pict' }
 
+// End offset of the element opened at `start`, so its whole subtree can be
+// skipped. A drawing/pict can nest entire paragraphs (a text box), and their
+// <w:t> must not be counted as the run's own text. Returns -1 if unterminated.
+function skipElement(xml: string, start: number, tag: string): number {
+  const gt = xml.indexOf('>', start)
+  if (gt === -1) return -1
+  if (xml[gt - 1] === '/') return gt + 1 // self-closed, no subtree
+  const open = new RegExp(`<${tag}[\\s>/]`, 'g')
+  const close = new RegExp(`</${tag}\\s*>`, 'g')
+  let depth = 1
+  let i = gt + 1
+  while (depth > 0) {
+    open.lastIndex = i
+    close.lastIndex = i
+    const o = open.exec(xml)
+    const c = close.exec(xml)
+    if (!c) return -1 // unterminated — caller declines the whole scan
+    if (o && o.index < c.index) { depth++; i = o.index + 1 }
+    else { depth--; i = c.index + c[0].length }
+  }
+  return i
+}
+
+function getRunChildOrder(runXml: string): RunPart[] | undefined {
   let body = runXml
   const rprEnd = body.indexOf('</w:rPr>')
   if (rprEnd !== -1) body = body.slice(rprEnd + 8) // skip run properties
 
   const parts: RunPart[] = []
-  const re = /<w:(t|delText|br|cr|tab|sym|noBreakHyphen|softHyphen)([\s\/>])([^>]*)?/g
+  const re = /<w:(t|delText|br|cr|tab|sym|noBreakHyphen|softHyphen|drawing|pict)([\s\/>])([^>]*)?/g
   let m: RegExpExecArray | null
   while ((m = re.exec(body)) !== null) {
     const tag = m[1]
+    if (tag === 'drawing' || tag === 'pict') {
+      const end = skipElement(body, m.index, `w:${tag}`)
+      if (end < 0) return undefined // malformed subtree — fall back
+      parts.push({ kind: tag })
+      re.lastIndex = end
+      continue
+    }
     if (tag === 't' || tag === 'delText') parts.push({ kind: 'text' })
     else if (tag === 'cr') parts.push({ kind: 'lineBreak' })
     else if (tag === 'br') {

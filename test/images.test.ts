@@ -77,3 +77,60 @@ describe('images', () => {
     expect(text).toContain('boxed')
   })
 })
+
+// A run can carry an image alongside its text. Word and Google Docs both emit
+// "<w:t>…</w:t><w:drawing/><w:t>…</w:t>" inside a single <w:r>. The image used to
+// stand for the WHOLE run, so any text sharing it was silently dropped.
+describe('image sharing a run with text', () => {
+  const IMAGE_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/image'
+  const REL = `<Relationship Id="rId9" Type="${IMAGE_REL}" Target="media/image1.png"/>`
+  const DRAWING =
+    `<w:drawing><wp:inline><wp:extent cx="914400" cy="914400"/><a:graphic><a:graphicData>` +
+    `<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:blipFill>` +
+    `<a:blip r:embed="rId9"/></pic:blipFill></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing>`
+
+  const shape = (doc: { blocks: unknown[] }): string[] =>
+    (doc.blocks[0] as ParagraphBlock).runs.map(r => (r.type === 'image' ? '[img]' : r.text))
+
+  it('keeps the text on both sides of an inline image', async () => {
+    const body = `<w:p><w:r><w:t>ANTES</w:t>${DRAWING}<w:t>DEPOIS</w:t></w:r></w:p>`
+    const doc = await parse(await buildDocx(body, REL))
+    expect(shape(doc)).toEqual(['ANTES', '[img]', 'DEPOIS'])
+  })
+
+  it('keeps text that precedes an image in the same run', async () => {
+    const body = `<w:p><w:r><w:t>only text</w:t>${DRAWING}</w:r></w:p>`
+    const doc = await parse(await buildDocx(body, REL))
+    expect(shape(doc)).toEqual(['only text', '[img]'])
+  })
+
+  it('orders an image against a line break in the same run', async () => {
+    const body = `<w:p><w:r><w:t>A</w:t><w:br/>${DRAWING}<w:t>B</w:t></w:r></w:p>`
+    const doc = await parse(await buildDocx(body, REL))
+    const runs = (doc.blocks[0] as ParagraphBlock).runs
+    expect(shape(doc)).toEqual(['A', '[img]', 'B'])
+    // The break belongs to 'A' — it renders after that run, before the image.
+    expect(runs[0].type === 'run' && runs[0].lineBreak).toBe(true)
+  })
+
+  it('GUARD an image-only run still yields just the image', async () => {
+    const body = `<w:p><w:r>${DRAWING}</w:r></w:p>`
+    const doc = await parse(await buildDocx(body, REL))
+    expect(shape(doc)).toEqual(['[img]'])
+    expect((firstImage(doc) as ImageRun).widthPx).toBe(96)
+  })
+
+  it('advances through several images in one run', async () => {
+    const body =
+      `<w:p><w:r><w:t>a</w:t>${DRAWING}<w:t>b</w:t>${DRAWING}<w:t>c</w:t></w:r></w:p>`
+    const doc = await parse(await buildDocx(body, REL))
+    expect(shape(doc)).toEqual(['a', '[img]', 'b', '[img]', 'c'])
+  })
+
+  it('GUARD an unresolvable image drops the run instead of emitting an empty one', async () => {
+    // rId9 is not declared, so the drawing resolves to nothing.
+    const body = `<w:p><w:r>${DRAWING}</w:r><w:r><w:t>after</w:t></w:r></w:p>`
+    const doc = await parse(await buildDocx(body, ''))
+    expect(shape(doc)).toEqual(['after'])
+  })
+})
