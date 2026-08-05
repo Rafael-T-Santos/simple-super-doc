@@ -4,6 +4,36 @@ All notable changes to `simple-super-doc` are documented here. The format is bas
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.11.7] - 2026-08-05
+
+Line breaks now land where Word puts them, and a document containing an empty run
+no longer fails to open at all.
+
+### Fixed
+- **Text no longer disappears around a page break.** Pressing `Ctrl+Enter` in the
+  middle of a paragraph makes Word put the page break *inside* the run holding the
+  surrounding text. That whole run was treated as the break, so the text on both
+  sides of it vanished from the output. The paragraph now splits at the break with
+  the text before and after it intact.
+- **A line break sits between the two pieces of text it separates.** A `<w:br/>` or
+  `<w:cr/>` between two text segments of one run was rendered after both of them,
+  so `A<br>B` came out as `AB<br>`. Several consecutive breaks also collapsed into
+  one; N breaks now render as N.
+- **Empty runs no longer crash the parse.** A document containing `<w:r></w:r>` or
+  `<w:r/>` — which Word emits routinely — threw a `TypeError` and failed the entire
+  document. Empty runs are now read as the empty runs they are.
+- **Headers, footers and footnotes keep their document order.** These parts never
+  received the raw XML the parser uses to recover ordering, so all of the above
+  applied to them, *and* a hyperlink in the middle of a header or footer paragraph
+  was moved to the end of the line. Order is now recovered there too.
+
+### Changed
+- A run's children (text, tabs, breaks, symbols, hyphens) are read in true document
+  order rather than inferred from their counts. Tabs packed into one run alongside
+  text — the Google Docs `text <w:tab/> text` shape — no longer depend on the older
+  positional heuristic, which stays only as a fallback. A run holding text followed
+  by a tab now reports the tab after that text instead of in front of it.
+
 ## [0.11.6] - 2026-07-09
 
 Map inline run/paragraph elements that were silently dropped, found by analysis
