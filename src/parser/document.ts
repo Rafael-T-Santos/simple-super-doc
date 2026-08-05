@@ -39,6 +39,14 @@ export type ParseContext = {
   endnoteRefs: string[]
 }
 
+// An EMPTY run (<w:r/> or <w:r></w:r>, which Word emits routinely) parses to the
+// string "" rather than an object, and the `in` checks used to inspect a run
+// throw a TypeError on a non-object — which failed the WHOLE document. Normalize
+// to an empty object so an empty run flows through as the empty run it is.
+function asRunObject(node: unknown): Record<string, unknown> {
+  return (typeof node === 'object' && node !== null ? node : {}) as Record<string, unknown>
+}
+
 function getVal(node: unknown): string | undefined {
   if (node == null) return undefined
   if (typeof node === 'object') return (node as Record<string, string>).val
@@ -96,6 +104,7 @@ async function parseRun(
   paraStyle: ComputedStyle,
   ctx: ParseContext,
   href?: string,
+  runXml?: string,
 ): Promise<Run | Run[] | null> {
   const rPr = r.rPr as Record<string, unknown> | undefined
 
@@ -108,17 +117,58 @@ async function parseRun(
   if ('fldChar' in r) return null
   if ('footnoteRef' in r || 'endnoteRef' in r) return null
 
+  // The run's inline children, in document order, recovered from raw XML. Used
+  // only when the recovered parts account for EVERY grouped child, so a scan
+  // that disagrees with the parsed object falls back to the positional
+  // heuristics below rather than dropping content.
+  const collectText = (node: unknown): string[] => {
+    if (node == null) return []
+    if (Array.isArray(node)) return node.flatMap(collectText)
+    if (typeof node === 'string') return [node]
+    if (typeof node === 'object') {
+      const t = node as Record<string, unknown>
+      return [String(t['#text'] ?? t._ ?? '')]
+    }
+    return [String(node)]
+  }
+  const asArray = (n: unknown): unknown[] => (Array.isArray(n) ? n : n != null ? [n] : [])
+  const rawSegments = collectText(r.t ?? r.delText)
+  const tabCount = Array.isArray(r.tab) ? r.tab.length : 'tab' in r ? 1 : 0
+  const symList = asArray(r.sym)
+  const scanned = runXml ? getRunChildOrder(runXml) : undefined
+  const countOf = (k: RunPart['kind']): number => (scanned ?? []).filter(p => p.kind === k).length
+  const orderedParts =
+    scanned &&
+    countOf('text') === rawSegments.length &&
+    countOf('tab') === tabCount &&
+    countOf('sym') === symList.length &&
+    countOf('noBreakHyphen') === asArray(r.noBreakHyphen).length &&
+    countOf('softHyphen') === asArray(r.softHyphen).length
+      ? scanned
+      : undefined
+
   // w:br: a soft line break becomes a <br>; an explicit page break becomes a
   // transient pageBreak marker (parseParagraph splits the paragraph there onto a
   // new page). A column break has no place in the single-column flow — dropped.
   let lineBreak = false
   if ('br' in r) {
     const br = r.br as Record<string, string> | string | undefined
-    const brType = typeof br === 'object' && br !== null ? br.type : undefined
-    if (brType === 'page') {
-      return { type: 'run', text: '', style: Object.assign({}, paraStyle, extractRPr(rPr)), pageBreak: true }
+    // Multiple <w:br/> in one run make this an array; the fallback below can only
+    // act on a single kind, so it reads the first (the ordered path handles each
+    // break individually and ignores this).
+    const first = Array.isArray(br) ? br[0] : br
+    const brType = typeof first === 'object' && first !== null
+      ? (first as Record<string, string>).type
+      : undefined
+    // Without recovered order, a page/column break can only be treated as the
+    // whole run — which drops any text sharing it. With order, fall through and
+    // let the ordered path place the break BETWEEN the texts instead.
+    if (!orderedParts) {
+      if (brType === 'page') {
+        return { type: 'run', text: '', style: Object.assign({}, paraStyle, extractRPr(rPr)), pageBreak: true }
+      }
+      if (brType === 'column') return null
     }
-    if (brType === 'column') return null
     lineBreak = true
   }
   // w:cr — a carriage return is a soft line break, same as <w:br/> with no type.
@@ -218,24 +268,84 @@ async function parseRun(
 
   // Text run(s). A tracked-deletion run carries its text in <w:delText> instead
   // of <w:t>. A single run may also hold MULTIPLE <w:t> segments interleaved
-  // with <w:tab/> — Google Docs packs "text <w:tab/> text" into one <w:r>. The
-  // XML grouping loses the exact text/tab order, so split into ordered runs by
-  // the two dominant patterns: one tab between each segment, else all tabs
-  // between the first two (keeps a footer's "V.4 <tabs> CONFIDENCIAL" split so
-  // the trailing part right-aligns instead of getting dragged along the tabs).
-  const collectText = (node: unknown): string[] => {
-    if (node == null) return []
-    if (Array.isArray(node)) return node.flatMap(collectText)
-    if (typeof node === 'string') return [node]
-    if (typeof node === 'object') {
-      const t = node as Record<string, unknown>
-      return [String(t['#text'] ?? t._ ?? '')]
+  // with <w:tab/> and breaks — Google Docs packs "text <w:tab/> text" into one
+  // <w:r>, and Word puts a Shift+Enter/Ctrl+Enter break inside the run holding
+  // the surrounding text.
+  //
+  // Preferred path: emit runs in TRUE document order. A run is shaped
+  // [leading tabs][text][trailing <br>], so any part that cannot extend the
+  // current run closes it and opens the next — which is what puts a break
+  // between two texts instead of after both, keeps N breaks as N, and stops a
+  // page break from swallowing the text that shares its run.
+  if (orderedParts) {
+    const makeOrdered = (text: string, tabs: number, br: boolean): TextRun => ({
+      type: 'run', text, style: runStyle,
+      ...(href ? { href } : {}),
+      ...(br ? { lineBreak: true } : {}),
+      ...(tabs ? { tabs } : {}),
+    })
+    const out: Run[] = []
+    let text = ''
+    let tabs = 0
+    let started = false // a text/sym/hyphen part has opened the current run
+    let ti = 0, syi = 0
+    let font: string | undefined
+    const flush = (withBreak: boolean): void => {
+      if (!started && !withBreak && tabs === 0) return
+      const run = makeOrdered(text, tabs, withBreak)
+      // font is set only when a symbol OPENED this run (a text part always
+      // flushes first), so the run is symbol-only and keeps the symbol font.
+      if (font) run.style = Object.assign({}, runStyle, { fontFamily: font })
+      out.push(run)
+      text = ''; tabs = 0; started = false; font = undefined
     }
-    return [String(node)]
+    for (const p of orderedParts) {
+      switch (p.kind) {
+        case 'text':
+          if (started) flush(false) // adjacent <w:t> stay separate runs, as before
+          text = rawSegments[ti++] ?? ''
+          started = true
+          break
+        case 'sym': {
+          const sy = symList[syi++] as Record<string, string> | undefined
+          const code = parseInt(String(sy?.char ?? ''), 16)
+          // Guard the valid Unicode range so a malformed w:char can't throw.
+          if (code >= 0 && code <= 0x10ffff) text += String.fromCodePoint(code)
+          if (!started) font = sy?.font // symbol-only run keeps the symbol font
+          started = true
+          break
+        }
+        case 'noBreakHyphen': text += '‑'; started = true; break
+        case 'softHyphen': text += '­'; started = true; break
+        case 'tab':
+          if (started) flush(false) // tabs are LEADING — they belong to the next run
+          tabs++
+          break
+        case 'lineBreak': flush(true); break
+        case 'pageBreak':
+          flush(false)
+          // Transient marker; parseParagraph splits the paragraph here.
+          out.push({ type: 'run', text: '', style: runStyle, pageBreak: true })
+          break
+        case 'columnBreak': break // no place in the single-column flow — dropped
+      }
+    }
+    flush(false)
+    if (out.length === 0) {
+      // A run holding only a column break contributes nothing to a single-column
+      // flow — drop it entirely rather than leaving an empty run behind.
+      if (orderedParts.some(p => p.kind === 'columnBreak')) return null
+      return { type: 'run', text: '', style: runStyle, ...(href ? { href } : {}) }
+    }
+    return out.length === 1 ? out[0] : out
   }
-  const segments = collectText(r.t ?? r.delText)
-  const tabNode = r.tab
-  const tabCount = Array.isArray(tabNode) ? tabNode.length : 'tab' in r ? 1 : 0
+
+  // Fallback: no raw XML for this run (or the scan disagreed with the parsed
+  // object), so positions have to be guessed. Split into ordered runs by the two
+  // dominant tab patterns: one tab between each segment, else all tabs between
+  // the first two (keeps a footer's "V.4 <tabs> CONFIDENCIAL" split so the
+  // trailing part right-aligns instead of getting dragged along the tabs).
+  const segments = rawSegments.slice()
 
   // Inline character-producing elements a run may carry alongside <w:t>: symbol
   // glyphs (Insert Symbol, in a symbol font), non-breaking (U+2011) and soft
@@ -243,10 +353,9 @@ async function parseRun(
   // The XML grouping loses their position, so weave hyphens between the first two
   // text segments (the common "word<nbh>word" packing) and merge a symbol into
   // the run text (carrying its symbol font when the run is symbol-only).
-  const asArray = (n: unknown): unknown[] => (Array.isArray(n) ? n : n != null ? [n] : [])
   let symText = ''
   let symFont: string | undefined
-  for (const sy of asArray(r.sym)) {
+  for (const sy of symList) {
     const code = parseInt(String((sy as Record<string, string>)?.char ?? ''), 16)
     // Guard the valid Unicode range so a malformed w:char can't throw a RangeError.
     if (code >= 0 && code <= 0x10ffff) symText += String.fromCodePoint(code)
@@ -368,7 +477,7 @@ async function parseParagraph(
   // fldSimple is a self-contained field: <w:fldSimple w:instr=" PAGE "> wraps
   // its own cached-result runs. r is optional on those inputs (the field is
   // resolved from the instr attribute, not from a run).
-  type RunInput = { r?: Record<string, unknown>; href?: string; deleted?: boolean; inserted?: boolean; fldSimple?: Record<string, unknown> }
+  type RunInput = { r?: Record<string, unknown>; href?: string; deleted?: boolean; inserted?: boolean; fldSimple?: Record<string, unknown>; xml?: string }
   const directRuns = (p.r ?? []) as Record<string, unknown>[]
   const insList = (p.ins ?? []) as Record<string, unknown>[]
   const delList = (p.del ?? []) as Record<string, unknown>[]
@@ -382,25 +491,29 @@ async function parseParagraph(
   const hyperlinks = (p.hyperlink ?? []) as Record<string, unknown>[]
   const fldSimpleList = (p.fldSimple ?? []) as Record<string, unknown>[]
 
-  const runChildInputs = (node: Record<string, unknown>, flag: 'inserted' | 'deleted'): RunInput[] => {
+  // xmls (when present) are the raw <w:r> slices of the group being expanded,
+  // aligned 1:1 with its parsed runs, so each run can recover its own child order.
+  const runChildInputs = (node: Record<string, unknown>, flag: 'inserted' | 'deleted', xmls?: string[]): RunInput[] => {
     const inner = node.r
     const arr = Array.isArray(inner) ? inner : inner ? [inner] : []
-    return (arr as Record<string, unknown>[]).map(r => ({ r, [flag]: true }))
+    const ok = xmls && xmls.length === arr.length
+    return (arr as Record<string, unknown>[]).map((r, i) => ({ r, [flag]: true, ...(ok ? { xml: xmls[i] } : {}) }))
   }
-  const insInputs = (ins: Record<string, unknown>): RunInput[] => runChildInputs(ins, 'inserted')
-  const delInputs = (del: Record<string, unknown>): RunInput[] => runChildInputs(del, 'deleted')
-  const hlInputs = (hl: Record<string, unknown>): RunInput[] => {
+  const insInputs = (ins: Record<string, unknown>, xmls?: string[]): RunInput[] => runChildInputs(ins, 'inserted', xmls)
+  const delInputs = (del: Record<string, unknown>, xmls?: string[]): RunInput[] => runChildInputs(del, 'deleted', xmls)
+  const hlInputs = (hl: Record<string, unknown>, xmls?: string[]): RunInput[] => {
     const href = resolveHyperlinkHref(hl, ctx)
     const inner = hl.r
-    if (Array.isArray(inner)) return inner.map(r => ({ r, href }))
-    return inner ? [{ r: inner as Record<string, unknown>, href }] : []
+    const arr = (Array.isArray(inner) ? inner : inner ? [inner] : []) as Record<string, unknown>[]
+    const ok = xmls && xmls.length === arr.length
+    return arr.map((r, i) => ({ r, href, ...(ok ? { xml: xmls[i] } : {}) }))
   }
 
   const order = rawXml ? getRunOrder(rawXml) : []
   // Use the recovered order only if it accounts for every grouped child; else
   // fall back to the safe (append-grouped) order.
   const counts = { r: 0, hyperlink: 0, ins: 0, del: 0, moveTo: 0, moveFrom: 0, fldSimple: 0 }
-  for (const t of order) counts[t]++
+  for (const e of order) counts[e.tag]++
   const orderOk = order.length > 0 &&
     counts.r === directRuns.length && counts.hyperlink === hyperlinks.length &&
     counts.ins === insList.length && counts.del === delList.length &&
@@ -410,13 +523,14 @@ async function parseParagraph(
   const inputs: RunInput[] = []
   if (orderOk) {
     let ri = 0, hi = 0, ii = 0, di = 0, mti = 0, mfi = 0, fi = 0
-    for (const t of order) {
-      if (t === 'r') inputs.push({ r: directRuns[ri++] })
-      else if (t === 'hyperlink') inputs.push(...hlInputs(hyperlinks[hi++]))
-      else if (t === 'ins') inputs.push(...insInputs(insList[ii++]))
-      else if (t === 'del') inputs.push(...delInputs(delList[di++]))
-      else if (t === 'moveTo') inputs.push(...runChildInputs(moveToList[mti++], 'inserted'))
-      else if (t === 'moveFrom') inputs.push(...runChildInputs(moveFromList[mfi++], 'deleted'))
+    for (const e of order) {
+      const t = e.tag
+      if (t === 'r') inputs.push({ r: directRuns[ri++], xml: e.runXmls[0] })
+      else if (t === 'hyperlink') inputs.push(...hlInputs(hyperlinks[hi++], e.runXmls))
+      else if (t === 'ins') inputs.push(...insInputs(insList[ii++], e.runXmls))
+      else if (t === 'del') inputs.push(...delInputs(delList[di++], e.runXmls))
+      else if (t === 'moveTo') inputs.push(...runChildInputs(moveToList[mti++], 'inserted', e.runXmls))
+      else if (t === 'moveFrom') inputs.push(...runChildInputs(moveFromList[mfi++], 'deleted', e.runXmls))
       else inputs.push({ fldSimple: fldSimpleList[fi++] })
     }
   } else {
@@ -450,14 +564,14 @@ async function parseParagraph(
       else if (field === 'NUMPAGES' || field === 'SECTIONPAGES') runs.push({ type: 'run', text: '', style: mStyle, totalPages: true })
       else {
         for (const ir of innerRuns) {
-          const run = await parseRun(ir, paraStyle, ctx)
+          const run = await parseRun(asRunObject(ir), paraStyle, ctx)
           if (run !== null) runs.push(...(Array.isArray(run) ? run : [run]))
         }
       }
       continue
     }
-    const r = inp.r as Record<string, unknown>
-    const { href, deleted, inserted } = inp
+    const r = asRunObject(inp.r)
+    const { href, deleted, inserted, xml } = inp
 
     // Field components may be split one-per-run (begin | code | separate | result
     // | end) OR packed into a SINGLE run — Google Docs exports the whole field in
@@ -486,7 +600,7 @@ async function parseParagraph(
     }
     // Suppress the cached result of a live (PAGE/NUMPAGES) field.
     if (fieldStack.some(f => f.inResult && LIVE_FIELDS.has(f.name))) continue
-    const run = await parseRun(r, paraStyle, ctx, href)
+    const run = await parseRun(r, paraStyle, ctx, href, xml)
     if (run !== null) {
       for (const rn of Array.isArray(run) ? run : [run]) {
         if (deleted && rn.type === 'run') (rn as TextRun).deleted = true
@@ -786,10 +900,50 @@ function marginToPx(
 
 // Inner XML of <w:body> (between its tags), or '' if absent.
 function bodyInner(xml: string): string {
-  const bodyStart = xml.indexOf('<w:body>')
-  const bodyEnd = xml.lastIndexOf('</w:body>')
-  if (bodyStart === -1 || bodyEnd === -1) return ''
-  return xml.slice(bodyStart + 8, bodyEnd)
+  return rootInner(xml, 'w:body')
+}
+
+// Inner XML of a part's root element. The body is <w:body>, but a header is
+// <w:hdr>, a footer <w:ftr> and a note <w:footnote>/<w:endnote> — all of which
+// need the same raw XML to recover document order (run order within a paragraph,
+// and a run's own child order).
+function rootInner(xml: string, tag: string): string {
+  const open = xml.indexOf(`<${tag}`)
+  if (open === -1) return ''
+  const gt = xml.indexOf('>', open)
+  const close = xml.lastIndexOf(`</${tag}>`)
+  if (gt === -1 || close === -1 || close < gt) return ''
+  return xml.slice(gt + 1, close)
+}
+
+// Raw XML of each direct-child <tag> element of a container, in document order.
+// Used to align notes (w:footnote/w:endnote) with their parsed counterparts.
+function elementChunksOf(inner: string, tag: string): string[] {
+  const chunks: string[] = []
+  const re = new RegExp(`<(/?)${tag}[\\s>/]`, 'g')
+  let depth = 0
+  let start = -1
+  let m: RegExpExecArray | null
+  while ((m = re.exec(inner)) !== null) {
+    if (m[1] === '/') {
+      depth = Math.max(0, depth - 1)
+      if (depth === 0 && start >= 0) {
+        const gt = inner.indexOf('>', m.index)
+        chunks.push(inner.slice(start, gt === -1 ? m.index : gt + 1))
+        start = -1
+      }
+      continue
+    }
+    const gt = inner.indexOf('>', m.index)
+    const selfClose = gt > 0 && inner[gt - 1] === '/'
+    if (selfClose) {
+      if (depth === 0) chunks.push(inner.slice(m.index, gt + 1))
+      continue
+    }
+    if (depth === 0) start = m.index
+    depth++
+  }
+  return chunks
 }
 
 // Raw XML of each direct-child paragraph of a container's inner XML (paragraphs
@@ -900,40 +1054,98 @@ function extractRowCellInners(tableXml: string): string[][] {
 // hyperlink/insertion/deletion in the MIDDLE of a paragraph would otherwise be
 // reordered to the end.
 type RunOrderTag = 'r' | 'hyperlink' | 'ins' | 'del' | 'moveTo' | 'moveFrom' | 'fldSimple'
-function getRunOrder(paraXml: string): RunOrderTag[] {
+// Each entry also carries the raw XML of the <w:r> elements it contributes (the
+// run itself for 'r', the wrapped runs for a hyperlink/ins/del/...), so parseRun
+// can recover the order of a run's OWN children (text vs. br vs. tab) the same
+// way — see getRunChildOrder.
+type RunOrderEntry = { tag: RunOrderTag; runXmls: string[] }
+function getRunOrder(paraXml: string): RunOrderEntry[] {
   let body = paraXml
   const pprEnd = body.indexOf('</w:pPr>')
   if (pprEnd !== -1) body = body.slice(pprEnd + 8) // skip paragraph properties
 
-  const order: RunOrderTag[] = []
+  const order: RunOrderEntry[] = []
   // moveTo/moveFrom are tracked-move wrappers (like ins/del). The trailing
   // [\s>\/] excludes their range markers (moveToRangeStart/End etc.), which carry
   // no runs.
   const re = /<(\/?)w:(r|hyperlink|ins|del|moveTo|moveFrom|fldSimple)[\s>\/]/g
   let depth = 0    // inside a hyperlink/ins/del/moveTo/moveFrom/fldSimple wrapper
-  let inRun = false // inside a <w:r> (skip its rPr-change ins/del markers)
+  let runDepth = 0 // inside a <w:r> (skip its rPr-change ins/del markers)
+  let runStart = -1 // offset of the outermost open <w:r>, for its raw slice
   let m: RegExpExecArray | null
   while ((m = re.exec(body)) !== null) {
     const isClose = m[1] === '/'
     const tag = m[2] as RunOrderTag
     if (tag === 'r') {
-      if (isClose) inRun = false
-      else {
-        if (depth === 0) order.push('r')
-        inRun = true
+      if (isClose) {
+        runDepth = Math.max(0, runDepth - 1)
+        // Closing the OUTERMOST run: capture its full XML on the entry that owns
+        // it (the 'r' entry just pushed, or the enclosing wrapper's entry).
+        if (runDepth === 0 && runStart >= 0) {
+          const gt = body.indexOf('>', m.index)
+          order[order.length - 1]?.runXmls.push(body.slice(runStart, gt === -1 ? m.index : gt + 1))
+          runStart = -1
+        }
+        continue
       }
+      // A run nested in a drawing/pict text box is not a paragraph-level child.
+      if (runDepth === 0) {
+        if (depth === 0) order.push({ tag: 'r', runXmls: [] })
+        const gt = body.indexOf('>', m.index)
+        const selfClose = gt > 0 && body[gt - 1] === '/'
+        if (selfClose) continue // <w:r/> — no children, no slice to capture
+        runStart = m.index
+      }
+      runDepth++
       continue
     }
-    if (inRun) continue // an <w:ins>/<w:del> inside a run is an rPr change, not content
+    if (runDepth > 0) continue // an <w:ins>/<w:del> inside a run is an rPr change, not content
     if (isClose) { depth = Math.max(0, depth - 1); continue }
     // Opening wrapper. A self-closed element (e.g. <w:fldSimple .../>) has no
     // matching close tag, so it must not push the depth.
     const gt = body.indexOf('>', m.index)
     const selfClose = gt > 0 && body[gt - 1] === '/'
-    if (depth === 0) order.push(tag)
+    if (depth === 0) order.push({ tag, runXmls: [] })
     if (!selfClose) depth++
   }
   return order
+}
+
+// Document order of a run's own inline children. fast-xml-parser groups these by
+// tag too, so "<w:t>A</w:t><w:br/><w:t>B</w:t>" arrives as { t: [A,B], br: '' } —
+// the COUNT survives but the POSITION does not. Recovering it from raw XML is
+// what lets a break land between the two texts instead of after both, and what
+// keeps a page break from swallowing the text sharing its run.
+type RunPart =
+  | { kind: 'text' } | { kind: 'tab' } | { kind: 'sym' }
+  | { kind: 'noBreakHyphen' } | { kind: 'softHyphen' }
+  | { kind: 'lineBreak' } | { kind: 'pageBreak' } | { kind: 'columnBreak' }
+function getRunChildOrder(runXml: string): RunPart[] | undefined {
+  // A drawing/pict subtree can nest whole paragraphs (a text box), whose <w:t>
+  // must not be mistaken for this run's text. Those runs return early in
+  // parseRun anyway, so decline rather than scan them.
+  if (/<w:(drawing|pict|txbxContent)[\s>]/.test(runXml)) return undefined
+
+  let body = runXml
+  const rprEnd = body.indexOf('</w:rPr>')
+  if (rprEnd !== -1) body = body.slice(rprEnd + 8) // skip run properties
+
+  const parts: RunPart[] = []
+  const re = /<w:(t|delText|br|cr|tab|sym|noBreakHyphen|softHyphen)([\s\/>])([^>]*)?/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(body)) !== null) {
+    const tag = m[1]
+    if (tag === 't' || tag === 'delText') parts.push({ kind: 'text' })
+    else if (tag === 'cr') parts.push({ kind: 'lineBreak' })
+    else if (tag === 'br') {
+      const type = /w:type="([^"]*)"/.exec(m[3] ?? '')?.[1]
+      parts.push({ kind: type === 'page' ? 'pageBreak' : type === 'column' ? 'columnBreak' : 'lineBreak' })
+    } else if (tag === 'tab') parts.push({ kind: 'tab' })
+    else if (tag === 'sym') parts.push({ kind: 'sym' })
+    else if (tag === 'noBreakHyphen') parts.push({ kind: 'noBreakHyphen' })
+    else parts.push({ kind: 'softHyphen' })
+  }
+  return parts
 }
 
 // Document order of the direct-child p and tbl elements of a container's inner
@@ -1061,7 +1273,8 @@ export async function parseFooterXml(xml: string, ctx: ParseContext): Promise<Bl
   const doc = parser.parse(xml) as Record<string, unknown>
   const ftr = doc?.ftr as Record<string, unknown> | undefined
   if (!ftr) return []
-  return parseBlockContainer(ftr, ctx)
+  const inner = rootInner(xml, 'w:ftr')
+  return parseBlockContainer(ftr, ctx, blockOrderOf(inner), paragraphChunksOf(inner), tableChunksOf(inner))
 }
 
 // Parse a header part (headerN.xml, root <w:hdr>) into content blocks.
@@ -1070,7 +1283,8 @@ export async function parseHeaderXml(xml: string, ctx: ParseContext): Promise<Bl
   const doc = parser.parse(xml) as Record<string, unknown>
   const hdr = doc?.hdr as Record<string, unknown> | undefined
   if (!hdr) return []
-  return parseBlockContainer(hdr, ctx)
+  const inner = rootInner(xml, 'w:hdr')
+  return parseBlockContainer(hdr, ctx, blockOrderOf(inner), paragraphChunksOf(inner), tableChunksOf(inner))
 }
 
 // Parse footnotes.xml / endnotes.xml into a map of note id -> content blocks.
@@ -1085,12 +1299,20 @@ export async function parseNotesXml(
   const doc = parser.parse(xml) as Record<string, unknown>
   const root = doc?.[`${kind}s`] as Record<string, unknown> | undefined
   const notes = (root?.[kind] ?? []) as Record<string, unknown>[]
-  for (const note of notes) {
+  // Raw XML per note, aligned 1:1 with the parsed notes, so a note's paragraphs
+  // recover document order the same way the body's do.
+  const rawNotes = elementChunksOf(rootInner(xml, `w:${kind}s`), `w:${kind}`)
+  const aligned = rawNotes.length === notes.length ? rawNotes : undefined
+  for (let i = 0; i < notes.length; i++) {
+    const note = notes[i]
     const id = String((note as Record<string, string>).id ?? '')
     // Skip the separator/continuation pseudo-notes (type set, no real content).
     const type = (note as Record<string, string>).type
     if (type === 'separator' || type === 'continuationSeparator') continue
-    map.set(id, await parseBlockContainer(note, ctx))
+    const inner = aligned ? rootInner(aligned[i], `w:${kind}`) : ''
+    map.set(id, inner
+      ? await parseBlockContainer(note, ctx, blockOrderOf(inner), paragraphChunksOf(inner), tableChunksOf(inner))
+      : await parseBlockContainer(note, ctx))
   }
   return map
 }

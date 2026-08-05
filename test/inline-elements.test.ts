@@ -47,12 +47,15 @@ describe('inline run elements (content that used to be dropped)', () => {
     expect(runs0(doc).map(r => r.text).join('')).toBe('ok')
   })
 
-  it('w:cr → a soft line break', async () => {
+  it('w:cr → a soft line break, BETWEEN the two texts', async () => {
     const doc = await parse(await buildDocx(
       `<w:p><w:r><w:t>A</w:t><w:cr/><w:t>B</w:t></w:r></w:p>`))
     const rs = runs0(doc)
     expect(rs.map(r => r.text)).toEqual(['A', 'B'])
-    expect(rs[rs.length - 1].lineBreak).toBe(true)
+    // The break follows 'A' — it is rendered after that run, so the flag belongs
+    // there and NOT on the trailing run (which would render "AB<br>").
+    expect(rs[0].lineBreak).toBe(true)
+    expect(rs[1].lineBreak).toBeUndefined()
   })
 
   it('w:noBreakHyphen → U+2011 between the words', async () => {
