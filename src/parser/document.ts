@@ -113,9 +113,8 @@ async function parseRun(
   // result is suppressed). They never reach parseRun, but guard defensively.
   if ('instrText' in r) return null
 
-  // Skip field characters and a note's own auto-number marker.
+  // Skip field characters.
   if ('fldChar' in r) return null
-  if ('footnoteRef' in r || 'endnoteRef' in r) return null
 
   // The run's inline children, in document order, recovered from raw XML. Used
   // only when the recovered parts account for EVERY grouped child, so a scan
@@ -137,6 +136,8 @@ async function parseRun(
   const symList = asArray(r.sym)
   const drawingList = asArray(r.drawing)
   const pictList = asArray(r.pict)
+  const footRefList = asArray(r.footnoteReference)
+  const endRefList = asArray(r.endnoteReference)
   const scanned = runXml ? getRunChildOrder(runXml) : undefined
   const countOf = (k: RunPart['kind']): number => (scanned ?? []).filter(p => p.kind === k).length
   const orderedParts =
@@ -147,7 +148,10 @@ async function parseRun(
     countOf('noBreakHyphen') === asArray(r.noBreakHyphen).length &&
     countOf('softHyphen') === asArray(r.softHyphen).length &&
     countOf('drawing') === drawingList.length &&
-    countOf('pict') === pictList.length
+    countOf('pict') === pictList.length &&
+    countOf('footnoteReference') === footRefList.length &&
+    countOf('endnoteReference') === endRefList.length &&
+    countOf('noteRefMark') === asArray(r.footnoteRef).length + asArray(r.endnoteRef).length
       ? scanned
       : undefined
 
@@ -186,19 +190,33 @@ async function parseRun(
 
   // Footnote/endnote reference: emit a numbered marker run. The number is the
   // position of this reference among same-type references in document order.
-  const noteEl = (r.footnoteReference ?? r.endnoteReference) as Record<string, string> | undefined
-  if (noteEl !== undefined) {
-    const isFoot = 'footnoteReference' in r
-    const id = String(noteEl.id ?? '')
+  // Built per occurrence so the ordered path can place the marker BETWEEN the
+  // texts of the same run. The number is the position of this reference among
+  // same-type references in DOCUMENT order, so the push has to happen as the run
+  // is walked, not before it.
+  const buildNoteMarker = (noteEl: unknown, isFoot: boolean): TextRun => {
+    const id = String((noteEl as Record<string, string> | undefined)?.id ?? '')
     const refs = isFoot ? ctx.footnoteRefs : ctx.endnoteRefs
     refs.push(id)
-    const marker: TextRun = {
+    return {
       type: 'run',
       text: String(refs.length),
       style: runStyle,
       noteRef: { type: isFoot ? 'footnote' : 'endnote', number: refs.length },
+      ...(href ? { href } : {}),
     }
-    return marker
+  }
+
+  // A note's own auto-number marker renders nothing. Without recovered order it
+  // still has to stand for the whole run (dropping text that shares it); with
+  // order, the ordered path emits nothing for it and keeps the text.
+  if (!orderedParts && ('footnoteRef' in r || 'endnoteRef' in r)) return null
+
+  // Without recovered order the marker has to stand for the whole run, which
+  // drops any text sharing it. With order, fall through to the ordered path.
+  if (!orderedParts && (footRefList.length > 0 || endRefList.length > 0)) {
+    const isFoot = footRefList.length > 0
+    return buildNoteMarker((isFoot ? footRefList : endRefList)[0], isFoot)
   }
 
   // Image via drawing. Built per occurrence so the ordered path below can place
@@ -297,7 +315,7 @@ async function parseRun(
     let text = ''
     let tabs = 0
     let started = false // a text/sym/hyphen part has opened the current run
-    let ti = 0, syi = 0, di = 0, pi = 0
+    let ti = 0, syi = 0, di = 0, pi = 0, fri = 0, eri = 0
     let font: string | undefined
     const flush = (withBreak: boolean): void => {
       if (!started && !withBreak && tabs === 0) return
@@ -349,6 +367,15 @@ async function parseRun(
           if (img) out.push(img)
           break
         }
+        case 'footnoteReference':
+          flush(false)
+          out.push(buildNoteMarker(footRefList[fri++], true))
+          break
+        case 'endnoteReference':
+          flush(false)
+          out.push(buildNoteMarker(endRefList[eri++], false))
+          break
+        case 'noteRefMark': break // renders nothing; the note list carries the number
       }
     }
     flush(false)
@@ -358,7 +385,8 @@ async function parseRun(
       // VML text box whose text is recovered separately) renders nothing — drop
       // the run entirely rather than leaving an empty one behind.
       const dropped = orderedParts.some(
-        p => p.kind === 'columnBreak' || p.kind === 'drawing' || p.kind === 'pict')
+        p => p.kind === 'columnBreak' || p.kind === 'drawing' || p.kind === 'pict' ||
+             p.kind === 'noteRefMark')
       if (dropped) return null
       return { type: 'run', text: '', style: runStyle, ...(href ? { href } : {}) }
     }
@@ -825,9 +853,17 @@ async function parseTable(
       irCells.push(irCell)
     }
     const irRow: TableRow = { cells: irCells }
+    const trPr = rows[ri]?.trPr as Record<string, unknown> | undefined
+    // w:tblHeader marks a heading row, which Word repeats at the top of every
+    // page the table continues onto. Like other toggle properties it can be
+    // explicitly switched off.
+    if (trPr && 'tblHeader' in trPr) {
+      const val = getVal(trPr.tblHeader)
+      if (!(val === '0' || val === 'false' || val === 'off')) irRow.isHeader = true
+    }
     // Row height from w:trPr > w:trHeight (twips). hRule "exact" fixes the height;
     // the default "atLeast" is a minimum the content can grow past.
-    const trH = (rows[ri]?.trPr as Record<string, unknown> | undefined)?.trHeight as Record<string, string> | undefined
+    const trH = trPr?.trHeight as Record<string, string> | undefined
     if (trH?.val != null) {
       const px = Math.round((parseFloat(trH.val) * 96) / 1440)
       if (px > 0) {
@@ -971,25 +1007,33 @@ function elementChunksOf(inner: string, tag: string): string[] {
   return chunks
 }
 
-// Raw XML of each direct-child paragraph of a container's inner XML (paragraphs
-// nested inside a table are skipped), in document order. Aligns 1:1 with the
-// parser's grouped container.p[] array. Used to recover intra-paragraph run
-// order (see getRunOrder) for the body AND for table cells.
+// Raw XML of each direct-child paragraph of a container's inner XML, in document
+// order. Aligns 1:1 with the parser's grouped container.p[] array. Used to
+// recover intra-paragraph run order (see getRunOrder) for the body AND for table
+// cells.
+//
+// Paragraphs nested inside a table or a TEXT BOX (w:pict / w:drawing wrapping a
+// w:txbxContent) are not direct children and must be skipped. Missing the text
+// box case truncated the enclosing paragraph's chunk at the text box's own
+// </w:p>, which silently dropped run-order recovery for everything after it.
 function paragraphChunksOf(inner: string): string[] {
   const chunks: string[] = []
-  const re = /<(\/?)w:(p|tbl)[\s>\/]/g
-  let tblDepth = 0
+  const re = /<(\/?)w:(p|tbl|pict|drawing)[\s>\/]/g
+  let nested = 0
   let pStart = -1
   let m: RegExpExecArray | null
   while ((m = re.exec(inner)) !== null) {
     const isClose = m[1] === '/'
     const tag = m[2]
-    if (tag === 'tbl') {
-      if (isClose) tblDepth = Math.max(0, tblDepth - 1)
-      else tblDepth++
+    if (tag !== 'p') {
+      if (isClose) nested = Math.max(0, nested - 1)
+      else {
+        const gt = inner.indexOf('>', m.index)
+        if (!(gt > 0 && inner[gt - 1] === '/')) nested++ // self-closed opens nothing
+      }
       continue
     }
-    if (tblDepth !== 0) continue // paragraph inside a nested table — not direct
+    if (nested !== 0) continue // inside a table or text box — not a direct child
     if (!isClose) {
       const gt = inner.indexOf('>', m.index)
       if (gt > 0 && inner[gt - 1] === '/') chunks.push(inner.slice(m.index, gt + 1)) // <w:p/>
@@ -1146,6 +1190,8 @@ type RunPart =
   | { kind: 'noBreakHyphen' } | { kind: 'softHyphen' }
   | { kind: 'lineBreak' } | { kind: 'pageBreak' } | { kind: 'columnBreak' }
   | { kind: 'drawing' } | { kind: 'pict' }
+  | { kind: 'footnoteReference' } | { kind: 'endnoteReference' }
+  | { kind: 'noteRefMark' }
 
 // End offset of the element opened at `start`, so its whole subtree can be
 // skipped. A drawing/pict can nest entire paragraphs (a text box), and their
@@ -1176,10 +1222,23 @@ function getRunChildOrder(runXml: string): RunPart[] | undefined {
   if (rprEnd !== -1) body = body.slice(rprEnd + 8) // skip run properties
 
   const parts: RunPart[] = []
-  const re = /<w:(t|delText|br|cr|tab|sym|noBreakHyphen|softHyphen|drawing|pict)([\s\/>])([^>]*)?/g
+  // footnoteReference must precede footnoteRef in the alternation: the shorter
+  // name is a prefix of the longer one (same for endnote).
+  const re = /<w:(t|delText|br|cr|tab|sym|noBreakHyphen|softHyphen|drawing|pict|footnoteReference|endnoteReference|footnoteRef|endnoteRef)([\s\/>])([^>]*)?/g
   let m: RegExpExecArray | null
   while ((m = re.exec(body)) !== null) {
     const tag = m[1]
+    if (tag === 'footnoteReference' || tag === 'endnoteReference') {
+      parts.push({ kind: tag })
+      continue
+    }
+    // A note's OWN auto-number marker. It renders nothing (the renderer numbers
+    // the note list), but it must be a part so that text sharing its run isn't
+    // dropped along with it.
+    if (tag === 'footnoteRef' || tag === 'endnoteRef') {
+      parts.push({ kind: 'noteRefMark' })
+      continue
+    }
     if (tag === 'drawing' || tag === 'pict') {
       const end = skipElement(body, m.index, `w:${tag}`)
       if (end < 0) return undefined // malformed subtree — fall back
@@ -1204,18 +1263,29 @@ function getRunChildOrder(runXml: string): RunPart[] | undefined {
 // XML. fast-xml-parser groups elements by tag name, losing cross-type ordering.
 function blockOrderOf(inner: string): Array<'p' | 'tbl'> {
   const order: Array<'p' | 'tbl'> = []
-  // Match opening/closing w:p and w:tbl tags ([\s>\/] excludes w:pPr, w:pStyle etc.)
-  const re = /<(\/?)w:(p|tbl)[\s>\/]/g
-  let tblDepth = 0
+  // Match opening/closing w:p and w:tbl tags ([\s>\/] excludes w:pPr, w:pStyle etc.).
+  // w:pict / w:drawing are tracked only to skip the paragraphs inside a text box,
+  // which are not direct children of this container (same rule as a nested table).
+  const re = /<(\/?)w:(p|tbl|pict|drawing)[\s>\/]/g
+  let nested = 0
   let m: RegExpExecArray | null
   while ((m = re.exec(inner)) !== null) {
     const isClose = m[1] === '/'
-    const tag = m[2] as 'p' | 'tbl'
+    const tag = m[2] as 'p' | 'tbl' | 'pict' | 'drawing'
+    const selfClose = (() => {
+      const gt = inner.indexOf('>', m!.index)
+      return gt > 0 && inner[gt - 1] === '/'
+    })()
+    if (tag === 'pict' || tag === 'drawing') {
+      if (isClose) nested = Math.max(0, nested - 1)
+      else if (!selfClose) nested++
+      continue
+    }
     if (isClose) {
-      if (tag === 'tbl') tblDepth = Math.max(0, tblDepth - 1)
+      if (tag === 'tbl') nested = Math.max(0, nested - 1)
     } else {
-      if (tblDepth === 0) order.push(tag)
-      if (tag === 'tbl') tblDepth++
+      if (nested === 0) order.push(tag)
+      if (tag === 'tbl' && !selfClose) nested++
     }
   }
   return order

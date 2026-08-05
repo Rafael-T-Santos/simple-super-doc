@@ -99,3 +99,50 @@ describe('text boxes (w:txbxContent)', () => {
     expect(allText(doc.blocks)).toBe('Just text')
   })
 })
+
+// A text box nests whole paragraphs inside the run that carries it. Those
+// paragraphs are NOT direct children of the body, and the raw-XML scanners have
+// to skip them the same way they skip paragraphs inside a table. Missing that,
+// the enclosing paragraph's chunk was truncated at the text box's own </w:p>,
+// which silently disabled run-order recovery for the rest of the paragraph — so
+// text sharing a run with the text box was dropped.
+describe('a text box does not truncate its enclosing paragraph', () => {
+  const TEXT_BOX =
+    `<w:pict><v:shape><v:textbox><w:txbxContent>` +
+    `<w:p><w:r><w:t>INNER</w:t></w:r></w:p>` +
+    `</w:txbxContent></v:textbox></v:shape></w:pict>`
+
+  const allText = (doc: { blocks: unknown[] }): string =>
+    (doc.blocks as ParagraphBlock[])
+      .map(b => (b.runs ?? []).map(r => (r.type === 'run' ? r.text : '')).join(''))
+      .join('|')
+
+  it('keeps text that shares a run with a VML text box', async () => {
+    const doc = await parse(await buildDocx(
+      `<w:p><w:r><w:t>OUTSIDE</w:t>${TEXT_BOX}</w:r></w:p>`))
+    // Both survive: the run's own text stays in place, the box becomes its own block.
+    expect(allText(doc)).toContain('OUTSIDE')
+    expect(allText(doc)).toContain('INNER')
+  })
+
+  it('keeps run order in a paragraph that also holds a text box', async () => {
+    const doc = await parse(await buildDocx(
+      `<w:p><w:r><w:t>A</w:t><w:br/><w:t>B</w:t></w:r><w:r>${TEXT_BOX}</w:r></w:p>`))
+    const p = doc.blocks[0] as ParagraphBlock
+    expect(p.runs.map(r => (r as TextRun).text)).toEqual(['A', 'B'])
+    // The break belongs to 'A'; recovery must not have been disabled.
+    expect((p.runs[0] as TextRun).lineBreak).toBe(true)
+    expect((p.runs[1] as TextRun).lineBreak).toBeUndefined()
+  })
+
+  it('keeps the paragraphs that follow a text box paragraph', async () => {
+    const doc = await parse(await buildDocx(
+      `<w:p><w:r>${TEXT_BOX}</w:r></w:p>` +
+      `<w:p><w:r><w:t>ONE</w:t></w:r></w:p>` +
+      `<w:p><w:r><w:t>TWO</w:t></w:r></w:p>`))
+    const text = allText(doc)
+    expect(text).toContain('ONE')
+    expect(text).toContain('TWO')
+    expect(text).toContain('INNER')
+  })
+})
