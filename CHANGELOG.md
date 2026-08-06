@@ -4,6 +4,39 @@ All notable changes to `simple-super-doc` are documented here. The format is bas
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.13.3] - 2026-08-06
+
+A paragraph or list item too tall for the space left now continues on the next
+page instead of jumping to it whole.
+
+### Added
+- **Line-level page breaking.** Until now the paginator could cut a table between
+  its rows and a list between its items, but any single block that did not fit
+  moved whole. One 100-line list item in a real contract therefore left 60% of a
+  page blank. Paragraphs and list items are now cut between their line boxes.
+  The cut is made with `Range.extractContents`, so a break landing inside a
+  `<span>`, a link or a tracked change keeps its formatting on both pieces; a
+  word is never split; and Word's widow/orphan rule is honored, so a break that
+  would strand a single line is skipped and the block moves whole after all. A
+  continued list item shows no second marker and does not disturb the numbering.
+  A table CELL is still not cut: a tall single row moves whole.
+
+### Fixed
+- **Pages no longer absorb margins that collapse out of a block.** Whether a
+  block fit was decided from its border box, which excludes a last child's bottom
+  margin. The margin still takes space on the page, so the page silently
+  stretched. The fit test now measures where the next block would actually start.
+
+**On page counts:** this changes where breaks fall, so a document may render in
+fewer pages than before. Comparing against a LibreOffice render of the same
+contract, our page count moved from 7 to 6 while the reference stayed at 7. That
+gap is *not* the line breaking: these documents embed their fonts
+(`word/fonts/*.ttf`), the reference renderer uses them and this one does not yet,
+so our lines hold more text — 345 lines against the reference's 445 for the same
+document. Embedded font loading is the next thing to fix, and until it lands,
+page-for-page agreement with Word or LibreOffice is not a meaningful measure of
+this renderer's pagination.
+
 ## [0.13.2] - 2026-08-06
 
 ### Fixed

@@ -58,7 +58,9 @@ non-docx or malformed input.
   break, tab or inline image packed alongside text lands where Word put it —
   including a table that splits across pages, whose continued piece keeps the
   document's column widths. Long lists split across pages too, and an ordered
-  list's continuation resumes its numbering rather than restarting at 1.
+  list's continuation resumes its numbering rather than restarting at 1. A
+  paragraph or list item taller than the space left is cut between its lines,
+  keeping run formatting across the break and honoring Word's widow/orphan rule.
 - **Images** — inline and anchored DrawingML (`a:blip`) and legacy VML
   (`w:pict`/`v:imagedata`), as base64 data URLs; external/linked images
   (`r:link`) render from their URL. (EMF/WMF metafiles are skipped — browsers
@@ -146,6 +148,12 @@ following are intentionally out of scope:
   page breaks are reconstructed by two-pass DOM measurement and heuristics.
   Pagination is close but not guaranteed to match Word/LibreOffice line for
   line. For a byte-faithful page image, convert the `.docx` to PDF.
+- **Embedded fonts** — a `.docx` can ship its own fonts in `word/fonts/`
+  (`w:embedRegular` and friends in `fontTable.xml`). Those are not loaded yet, so
+  a document whose font is not installed renders in the browser's fallback. That
+  changes line breaking, and with it the page count: on a contract embedding DM
+  Sans this renderer produced 345 lines where a reference render using the
+  embedded font produced 445.
 - **Comments** — review comments are parsed away (treated as noise); only
   tracked-change insertions/deletions are surfaced (via `showRevisions`).
 
