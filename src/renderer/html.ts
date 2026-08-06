@@ -629,6 +629,70 @@ function renderBlocks(blocks: Block[], container: HTMLElement): void {
   closeLists()
 }
 
+// A block the paginator can cut in two when it does not fit the space left on a
+// page: a table splits between rows, a list between items. Anything else moves
+// whole to the next page, which is correct for a paragraph but would leave most
+// of a page blank for a long list. Returns null for those.
+function splitterFor(el: HTMLElement): ((el: HTMLElement, availH: number) => HTMLElement | null) | null {
+  if (el.tagName === 'TABLE') return (e, h) => splitTableRows(e as HTMLTableElement, h)
+  if (el.tagName === 'OL' || el.tagName === 'UL') return splitListItems
+  return null
+}
+
+// Split a list's items so the ones that fit within availH stay in the original
+// list; the overflow moves into a continuation list that is returned. Mirrors
+// splitTableRows, including its contract: null when nothing useful can be split
+// off (not even one item fits, or everything already fits), and the list must be
+// in the DOM so item heights can be measured.
+function splitListItems(list: HTMLElement, availH: number): HTMLElement | null {
+  const kids = Array.from(list.children) as HTMLElement[]
+  const listTop = list.getBoundingClientRect().top
+  let splitAt = 0 // index the continuation starts at; 0 means nothing can be cut
+  for (let i = 0; i < kids.length; i++) {
+    // Measure from the list's own top edge rather than summing offsetHeight:
+    // offsetHeight excludes an item's margins, and paragraphCss gives list items
+    // real margins, so summing underestimates the list and overfills the page
+    // (pages visibly grew past their min-height before this was measured from
+    // rects). Table rows have no margins, which is why splitTableRows can sum.
+    const consumed = kids[i].getBoundingClientRect().bottom - listTop
+    // No "the first item always fits" exemption, unlike splitTableRows. When not
+    // even one item fits the space left, returning null lets the caller move the
+    // whole list to a fresh page and try again with a full page of budget;
+    // keeping the item here would silently overflow the page box instead. This
+    // still terminates: on that fresh page the caller accepts the overflow
+    // (used === 0) when one item is taller than a whole page.
+    if (consumed > availH) break
+    // Only cut where the NEXT child opens a new item. renderBlocks attaches a
+    // nested list to `parent.lastLi ?? parent.el`, so a document whose list
+    // starts at a deeper level puts a bare <ol> directly under this one; that
+    // nested list has to travel with the item it belongs to, never alone.
+    if (kids[i + 1] === undefined || kids[i + 1].tagName === 'LI') splitAt = i + 1
+  }
+  if (splitAt === 0 || splitAt >= kids.length) return null
+  const rest = buildContinuationList(list, splitAt)
+  for (let i = splitAt; i < kids.length; i++) rest.appendChild(kids[i])
+  return rest
+}
+
+// Everything a continued list piece must inherit. cloneNode(false) carries the
+// attributes (list-style-type, padding) but not the children, which is what we
+// want. The counter is the per-piece state that is easy to lose: an <ol>
+// continuation without `start` restarts at 1 on the next page, so a contract's
+// clause "j." would come back as "a.".
+function buildContinuationList(list: HTMLElement, splitAt: number): HTMLElement {
+  const rest = list.cloneNode(false) as HTMLElement
+  if (list.tagName === 'OL') {
+    // Only <li> children advance an ordered list's counter, so a nested list
+    // left behind must not be counted.
+    const consumed = Array.from(list.children).slice(0, splitAt).filter(c => c.tagName === 'LI').length
+    // `.start` already reports 1 when the attribute is absent, so no `|| 1`
+    // fallback: numbering.ts passes w:start through verbatim, and a list that
+    // legitimately starts at 0 would have its continuation shifted by one.
+    ;(rest as HTMLOListElement).start = (list as HTMLOListElement).start + consumed
+  }
+  return rest
+}
+
 // Split a table's rows so the rows that fit within availH stay in the original
 // table; the overflow rows move into a new table (same element/styles) that is
 // returned. Returns null when nothing useful can be split off (no row fits the
@@ -791,44 +855,51 @@ function renderPlainPaginated(
     const child = children[i]
     const forced = child.dataset.ssdBreak === '1'
 
-    // Tables can split across pages: rows that fit stay, the rest continue on
-    // the next page (and split again if still too tall).
-    if (child.tagName === 'TABLE') {
+    // Tables and lists split across pages: the rows/items that fit stay, the
+    // rest continue on the next page (and split again if still too tall).
+    const split = splitterFor(child)
+    if (split) {
       if (forced && used > 0) pageDiv = newPage()
-      let table = child as HTMLTableElement
+      let piece = child
       for (;;) {
-        pageDiv.appendChild(table)
-        const th = table.offsetHeight
-        // Reserve space for footnotes referenced by the rows about to land on
-        // this page: Word puts a row's footnote at the bottom of the page that
-        // holds the row, so those rows must break early enough to leave room.
-        // Use the whole remaining table's refs as an upper bound for the split
-        // budget (safe: never overlaps), then record only the refs that
+        pageDiv.appendChild(piece)
+        // Real consumed height once the piece is placed, taken from layout:
+        // offsetTop is measured from the page's border box, so subtracting the
+        // top margin gives the space used inside the content box. offsetHeight
+        // alone misses the piece's own margins and the gap to the block above,
+        // and that error compounds — three list pieces on one page overflowed
+        // it by 48px, stretching the page past its min-height.
+        const usedAfter = piece.offsetTop + piece.offsetHeight - pm.top
+        // Reserve space for footnotes referenced by the rows/items about to land
+        // on this page: Word puts a footnote at the bottom of the page that
+        // holds its reference, so the piece must break early enough to leave
+        // room. Use the whole remaining piece's refs as an upper bound for the
+        // split budget (safe: never overlaps), then record only the refs that
         // actually stayed on this page.
-        const pieceRefs = footnoteNumbersIn(table)
+        const pieceRefs = footnoteNumbersIn(piece)
         const pieceReserve = fnReserve(pieceRefs, pageHasFn)
-        if (used + th <= contentH - reserve - pieceReserve) {
-          used += th
+        if (usedAfter <= contentH - reserve - pieceReserve) {
+          used = usedAfter
           recordFootnotes(pieceRefs, pieceReserve)
-          break // whole remaining table fits (with room for its footnotes)
+          break // whole remaining piece fits (with room for its footnotes)
         }
-        const rest = splitTableRows(table, contentH - reserve - pieceReserve - used)
+        const rest = split(piece, contentH - reserve - pieceReserve - used)
         if (!rest) {
           if (used === 0) {
-            used += th
+            used = usedAfter
             recordFootnotes(pieceRefs, pieceReserve)
             break // taller than a full page; accept overflow
           }
-          pageDiv.removeChild(table)
+          pageDiv.removeChild(piece)
           pageDiv = newPage()
           continue // retry on a fresh page
         }
-        // `table` now holds the rows that fit on this page; record their
-        // footnotes here, then continue with `rest` on a new page.
-        const fitRefs = footnoteNumbersIn(table)
+        // `piece` now holds what fits on this page; record its footnotes here,
+        // then continue with `rest` on a new page.
+        const fitRefs = footnoteNumbersIn(piece)
         recordFootnotes(fitRefs, fnReserve(fitRefs, pageHasFn))
         pageDiv = newPage()
-        table = rest
+        piece = rest
       }
       continue
     }

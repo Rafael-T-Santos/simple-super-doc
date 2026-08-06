@@ -865,3 +865,188 @@ describe('rotated cell sizing', () => {
     expect(r.overflowPx).toBeLessThanOrEqual(2)
   }, 30_000)
 })
+
+// A numbered list long enough to cross a page break, preceded by filler that
+// pushes its start down the page. `nested` puts a deeper-level item in the
+// middle, which renderBlocks attaches as a bare <ol> inside the list.
+async function buildLongListDocx(
+  items: number,
+  itemText = 'Item text long enough to occupy a real line of the page',
+  fillerParas = 6,
+  nested = false,
+  pageTwips = 5000,
+  ordered = true,
+): Promise<string> {
+  const filler = Array.from({ length: fillerParas }, (_, i) =>
+    `<w:p><w:r><w:t>Filler paragraph ${i + 1} standing between the top of the page and the list.</w:t></w:r></w:p>`,
+  ).join('')
+  const li = (i: number, ilvl = 0) =>
+    `<w:p><w:pPr><w:numPr><w:ilvl w:val="${ilvl}"/><w:numId w:val="1"/></w:numPr></w:pPr>` +
+    `<w:r><w:t>${i}. ${itemText}</w:t></w:r></w:p>`
+  const list = Array.from({ length: items }, (_, i) =>
+    nested && i === 2 ? li(i + 1) + li(99, 1) : li(i + 1),
+  ).join('')
+
+  // A short page (default ~3.5in of height) so a modest list is guaranteed to
+  // cross a break; a letter-height page swallows 40 items whole and the test
+  // would pass without ever exercising a split.
+  const body =
+    filler + list +
+    `<w:sectPr><w:pgSz w:w="12240" w:h="${pageTwips}"/>` +
+    `<w:pgMar w:top="400" w:bottom="400" w:left="600" w:right="600"/></w:sectPr>`
+
+  const zip = new JSZip()
+  zip.file(
+    '[Content_Types].xml',
+    `<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
+      `<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>` +
+      `<Default Extension="xml" ContentType="application/xml"/>` +
+      `<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>` +
+      `<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>` +
+      `<Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/></Types>`,
+  )
+  zip.file(
+    '_rels/.rels',
+    `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+      `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`,
+  )
+  zip.file(
+    'word/styles.xml',
+    `<?xml version="1.0"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
+      `<w:docDefaults><w:rPrDefault><w:rPr><w:sz w:val="24"/></w:rPr></w:rPrDefault></w:docDefaults></w:styles>`,
+  )
+  zip.file(
+    'word/_rels/document.xml.rels',
+    `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+      `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>` +
+      `<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/></Relationships>`,
+  )
+  zip.file(
+    'word/numbering.xml',
+    `<?xml version="1.0"?><w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
+      `<w:abstractNum w:abstractNumId="0">` +
+      `<w:lvl w:ilvl="0"><w:numFmt w:val="${ordered ? 'decimal' : 'bullet'}"/>` +
+      `<w:lvlText w:val="${ordered ? '%1.' : '-'}"/></w:lvl>` +
+      `<w:lvl w:ilvl="1"><w:numFmt w:val="lowerLetter"/><w:lvlText w:val="%2."/></w:lvl>` +
+      `</w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num></w:numbering>`,
+  )
+  zip.file(
+    'word/document.xml',
+    `<?xml version="1.0"?><w:document ` +
+      `xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ` +
+      `xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>${body}</w:body></w:document>`,
+  )
+  const buf = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' })
+  return buf.toString('base64')
+}
+
+async function listPages(b64: string) {
+  const page = await browser.newPage({ viewport: { width: 1000, height: 1400 } })
+  await page.setContent('<!doctype html><meta charset="utf-8"><div id="view"></div>')
+  await page.addScriptTag({ content: bundleJs })
+  const r = await page.evaluate(async (b64: string) => {
+    const bin = atob(b64)
+    const arr = new Uint8Array(bin.length)
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const SD = (window as any).SimpleDoc
+    const doc = await SD.parse(arr.buffer)
+    SD.render(doc, document.getElementById('view'))
+    const pages = Array.from(document.querySelectorAll('.ssd-page')) as HTMLElement[]
+    return {
+      nPages: pages.length,
+      // Content that spills past a page's declared box stretches it, because the
+      // box is sized with min-height. Real height above min-height is the signal.
+      overflowing: pages.filter(p => {
+        const min = parseFloat(getComputedStyle(p).minHeight)
+        return p.getBoundingClientRect().height > min + 1
+      }).length,
+      perPage: pages.map(p => ({
+        lists: Array.from(p.querySelectorAll('ol')).map(ol => ({
+          start: (ol as HTMLOListElement).start,
+          items: ol.querySelectorAll(':scope > li').length,
+          nested: ol.querySelectorAll(':scope > ol').length,
+        })),
+        items: p.querySelectorAll('li').length,
+        text: (p.textContent ?? '').replace(/\s+/g, ' ').trim(),
+      })),
+      totalItems: document.querySelectorAll('li').length,
+      // A <ul> carries no counter: buildContinuationList must not stamp `start`
+      // on a bullet continuation.
+      bulletContinuations: Math.max(0, document.querySelectorAll('ul').length - 1),
+      bulletsWithStart: Array.from(document.querySelectorAll('ul'))
+        .filter(ul => ul.hasAttribute('start')).length,
+    }
+  }, b64)
+  await page.close()
+  return r
+}
+
+describe('page-aware pagination: lists split across pages', () => {
+  it('continues a long list on the next page instead of moving it whole', async () => {
+    const r = await listPages(await buildLongListDocx(40))
+    expect(r.nPages).toBeGreaterThan(1)
+    // The list starts partway down page 1, so page 1 must carry SOME items. The
+    // bug this covers moved the whole list to page 2 and left page 1 half empty.
+    expect(r.perPage[0].items).toBeGreaterThan(0)
+    expect(r.perPage[1].items).toBeGreaterThan(0)
+    expect(r.totalItems).toBe(40)
+  }, 30_000)
+
+  it('does not overflow any page box', async () => {
+    const r = await listPages(await buildLongListDocx(40))
+    expect(r.overflowing).toBe(0)
+  }, 30_000)
+
+  it('resumes the numbering on the continuation instead of restarting at 1', async () => {
+    const r = await listPages(await buildLongListDocx(40))
+    const firstPageItems = r.perPage[0].lists.reduce((a, l) => a + l.items, 0)
+    const continuation = r.perPage[1].lists[0]
+    expect(continuation).toBeDefined()
+    // Item n+1 must be numbered n+1 on the next page, not 1.
+    expect(continuation.start).toBe(firstPageItems + 1)
+  }, 30_000)
+
+  it('keeps every item exactly once across the split', async () => {
+    const r = await listPages(await buildLongListDocx(40))
+    // No \b before the digit: textContent runs adjacent items together
+    // ("...of the page2. Item text..."), and there is no word boundary between
+    // "e" and "2", so the anchored pattern found only the first item per page.
+    const seen = r.perPage.flatMap(p => p.text.match(/\d+\. Item text/g) ?? [])
+    expect(seen.length).toBe(40)
+    expect(new Set(seen).size).toBe(40)
+  }, 30_000)
+
+  it('never separates a nested list from the item above it', async () => {
+    // renderBlocks attaches a deeper level to `parent.lastLi ?? parent.el`, so a
+    // nested <ol> can sit as a direct child of the list. Cutting immediately
+    // before it would strand it at the top of the next page under no item.
+    const r = await listPages(await buildLongListDocx(40, undefined, 6, true))
+    for (const page of r.perPage) {
+      const first = page.lists[0]
+      if (!first) continue
+      expect(first.items).toBeGreaterThan(0)
+    }
+    expect(r.overflowing).toBe(0)
+  }, 30_000)
+
+  it('splits a bullet list too, without inventing a counter for it', async () => {
+    // splitterFor accepts UL as well as OL. A <ul> has no counter, so
+    // buildContinuationList must leave `start` alone rather than stamping one on.
+    const r = await listPages(await buildLongListDocx(40, undefined, 6, false, 5000, false))
+    expect(r.nPages).toBeGreaterThan(1)
+    expect(r.totalItems).toBe(40)
+    expect(r.overflowing).toBe(0)
+    expect(r.perPage.every(p => p.lists.length === 0)).toBe(true) // no <ol> anywhere
+    expect(r.bulletContinuations).toBeGreaterThan(0)
+    expect(r.bulletsWithStart).toBe(0)
+  }, 30_000)
+
+  it('terminates when a single item is taller than a whole page', async () => {
+    // One item that cannot fit any page: the paginator must accept the overflow
+    // rather than loop forever trying to split it onto a fresh page.
+    const r = await listPages(await buildLongListDocx(3, 'WORD '.repeat(2000), 2, false, 4000))
+    expect(r.nPages).toBeGreaterThan(0)
+    expect(r.totalItems).toBe(3)
+  }, 30_000)
+})
