@@ -4,6 +4,20 @@ All notable changes to `simple-super-doc` are documented here. The format is bas
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.13.2] - 2026-08-06
+
+### Fixed
+- **A template page no longer grows past its own height.** The paginator for
+  documents with a full-page background measured each block on its own and read
+  the wrapper's `offsetHeight`, which drops the block's margins: they collapse
+  straight through a bare wrapper. The per-page total came out short, so content
+  ran past the page box — and since the box is sized with `min-height`, the sheet
+  silently stretched instead of breaking. Blocks are now measured together and
+  each one's footprint is the distance to the next, which is the spacing the
+  layout engine actually produced. Same rule the plain paginator already used.
+  Page counts and page contents are unchanged on the documents this was found on;
+  only the overflow goes away.
+
 ## [0.13.1] - 2026-08-06
 
 A long list no longer jumps whole to the next page, leaving most of a page blank.
