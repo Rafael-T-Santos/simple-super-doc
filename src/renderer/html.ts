@@ -630,13 +630,180 @@ function renderBlocks(blocks: Block[], container: HTMLElement): void {
 }
 
 // A block the paginator can cut in two when it does not fit the space left on a
-// page: a table splits between rows, a list between items. Anything else moves
-// whole to the next page, which is correct for a paragraph but would leave most
-// of a page blank for a long list. Returns null for those.
+// page: a table splits between rows, a list between items, and a paragraph
+// between lines. A table CELL is deliberately not split — a tall single row
+// still moves whole, because cutting inside a cell means rebuilding the row.
 function splitterFor(el: HTMLElement): ((el: HTMLElement, availH: number) => HTMLElement | null) | null {
   if (el.tagName === 'TABLE') return (e, h) => splitTableRows(e as HTMLTableElement, h)
   if (el.tagName === 'OL' || el.tagName === 'UL') return splitListItems
+  if (el.tagName === 'P') return splitInlineAtHeight
   return null
+}
+
+// getClientRects returns one rect per inline FRAGMENT, not per line: a line
+// broken across three <span>s yields three rects, and a <sup> on that line adds
+// a fourth with a different top. Count real line boxes by merging rects that
+// overlap vertically. Counting rects instead reported 15 lines for a 44px
+// element, which made the widow/orphan guard meaningless.
+function countLines(rects: DOMRectList): number {
+  const boxes = Array.from(rects).filter(r => r.height > 0).sort((a, b) => a.top - b.top)
+  if (boxes.length === 0) return 0
+  let lines = 1
+  let lineBottom = boxes[0].bottom
+  for (let i = 1; i < boxes.length; i++) {
+    if (boxes[i].top < lineBottom - 1) {
+      lineBottom = Math.max(lineBottom, boxes[i].bottom) // same line, taller run
+      continue
+    }
+    lines++
+    lineBottom = boxes[i].bottom
+  }
+  return lines
+}
+
+// Word's default widow/orphan control: never strand fewer than this many lines
+// of a paragraph alone on either side of a page break. Below that, moving the
+// whole block reads better than the split.
+const MIN_LINES_PER_PIECE = 2
+
+// Every text node inside `el`, in document order, with the running character
+// offset each one starts at. The offsets let a binary search address a position
+// in the element's text as a single number.
+function textPositions(el: HTMLElement): { nodes: Text[]; starts: number[]; total: number } {
+  const nodes: Text[] = []
+  const starts: number[] = []
+  let total = 0
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    const t = n as Text
+    nodes.push(t)
+    starts.push(total)
+    total += t.data.length
+  }
+  return { nodes, starts, total }
+}
+
+// Place a Range boundary at global character offset `at`.
+function boundaryAt(
+  pos: { nodes: Text[]; starts: number[] },
+  at: number,
+): { node: Text; offset: number } | null {
+  if (pos.nodes.length === 0) return null
+  // The last node whose start is <= at; the offset is the remainder inside it.
+  let lo = 0, hi = pos.nodes.length - 1
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1
+    if (pos.starts[mid] <= at) lo = mid
+    else hi = mid - 1
+  }
+  return { node: pos.nodes[lo], offset: Math.min(at - pos.starts[lo], pos.nodes[lo].data.length) }
+}
+
+// Split a block's inline content at the last line box that fits within availH:
+// the lines that fit stay in `el`, the rest move into a clone that is returned.
+// This is what lets a 100-line list item continue on the next page instead of
+// jumping whole and leaving most of a page blank.
+//
+// The tree is cut with Range.extractContents, which rebuilds the ancestor chain
+// on the far side of the cut — so a split in the middle of a <span>, an <a> or a
+// tracked-change <ins> keeps its formatting on both pieces. Doing this by hand
+// would mean reimplementing that.
+//
+// Returns null when the split is not worth making: no line fits, nothing would
+// move, or either piece would be left under MIN_LINES_PER_PIECE. The caller
+// then moves the whole block to a fresh page, exactly as before.
+function splitInlineAtHeight(el: HTMLElement, availH: number): HTMLElement | null {
+  const pos = textPositions(el)
+  if (pos.total === 0) return null
+  const top = el.getBoundingClientRect().top
+  // The lines are not the whole box: padding, border and the margin below still
+  // have to fit, or the piece that stays overflows the page by exactly that much
+  // (measured: 11px, the list item's bottom margin).
+  const cs = getComputedStyle(el)
+  const below =
+    parseFloat(cs.paddingBottom) + parseFloat(cs.borderBottomWidth) + parseFloat(cs.marginBottom)
+  // A Range's rects cover the TEXT box, which is shorter than the LINE box
+  // whenever line-height exceeds the font size. Laying out against the text
+  // bottom therefore cuts a few px too late and the page overflows by the
+  // leading (measured: 3px). Take the difference between the element's line
+  // height and its tallest text rect as that leading.
+  const whole = document.createRange()
+  whole.selectNodeContents(el)
+  const allRects = whole.getClientRects()
+  // Reduce rather than Math.max(...spread): a 100-line item runs to thousands of
+  // inline fragments, and spreading that many arguments is how you get a
+  // RangeError on a document that is merely long.
+  let textH = 0
+  for (let i = 0; i < allRects.length; i++) textH = Math.max(textH, allRects[i].height)
+  const lineH = parseFloat(cs.lineHeight)
+  const leading = Number.isFinite(lineH) ? Math.max(0, lineH - textH) : 0
+  availH -= below + leading
+  if (availH <= 0) return null
+
+  const probe = document.createRange()
+  // Height of the content up to global offset `at`, measured from the block's
+  // own top so the block's padding and the first line's leading are included.
+  const heightUpTo = (at: number): number => {
+    const b = boundaryAt(pos, at)
+    if (!b) return Infinity
+    probe.setStart(pos.nodes[0], 0)
+    probe.setEnd(b.node, b.offset)
+    const rects = probe.getClientRects()
+    if (rects.length === 0) return 0
+    // The LOWEST rect, not the last one: getClientRects is in document order, so
+    // a subscript or an inline image that hangs below the baseline can sit
+    // earlier in the list than the text that follows it. Taking the last rect
+    // would under-report the height there and cut a line too late.
+    let bottom = -Infinity
+    for (let i = 0; i < rects.length; i++) bottom = Math.max(bottom, rects[i].bottom)
+    return bottom - top
+  }
+
+  // Largest offset that still fits. Binary search: line boxes grow monotonically
+  // with the offset, so the predicate is monotone even though the text is not.
+  let lo = 0, hi = pos.total
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1
+    if (heightUpTo(mid) <= availH) lo = mid
+    else hi = mid - 1
+  }
+  if (lo <= 0 || lo >= pos.total) return null
+
+  // Back up to a word boundary so a word is never cut in half. The whitespace
+  // itself goes with the first piece, matching how a line break consumes it.
+  let cut = lo
+  while (cut > 0 && !/\s/.test(textAt(pos, cut - 1))) cut--
+  if (cut <= 0) return null
+
+  const b = boundaryAt(pos, cut)
+  if (!b) return null
+
+  // Widow/orphan guard, measured in real line boxes on both sides of the cut.
+  probe.setStart(pos.nodes[0], 0)
+  probe.setEnd(b.node, b.offset)
+  const linesKept = countLines(probe.getClientRects())
+  probe.setStart(b.node, b.offset)
+  probe.setEnd(pos.nodes[pos.nodes.length - 1], pos.nodes[pos.nodes.length - 1].data.length)
+  const linesMoved = countLines(probe.getClientRects())
+  if (linesKept < MIN_LINES_PER_PIECE || linesMoved < MIN_LINES_PER_PIECE) return null
+
+  const rest = el.cloneNode(false) as HTMLElement
+  const cutRange = document.createRange()
+  cutRange.setStart(b.node, b.offset)
+  cutRange.setEndAfter(el.lastChild!)
+  rest.appendChild(cutRange.extractContents())
+  if (!(rest.textContent ?? '').trim()) return null
+  // A continued paragraph must not repeat the space above it at the top of the
+  // next page, and a continued list item must not repeat its marker.
+  rest.style.marginTop = '0'
+  if (rest.tagName === 'LI') rest.style.listStyle = 'none'
+  return rest
+}
+
+// The character at a global offset, or '' past the end.
+function textAt(pos: { nodes: Text[]; starts: number[] }, at: number): string {
+  const b = boundaryAt(pos, at)
+  return b ? b.node.data.charAt(b.offset) : ''
 }
 
 // Split a list's items so the ones that fit within availH stay in the original
@@ -654,7 +821,13 @@ function splitListItems(list: HTMLElement, availH: number): HTMLElement | null {
     // real margins, so summing underestimates the list and overfills the page
     // (pages visibly grew past their min-height before this was measured from
     // rects). Table rows have no margins, which is why splitTableRows can sum.
-    const consumed = kids[i].getBoundingClientRect().bottom - listTop
+    // Include the item's own bottom margin. It collapses out of the list's box,
+    // so the rect stops short of it, but the space is still taken on the page —
+    // cutting after this item and ignoring it overflowed the page by exactly
+    // that margin (7px, and the page silently stretched to absorb it).
+    const consumed =
+      kids[i].getBoundingClientRect().bottom - listTop +
+      parseFloat(getComputedStyle(kids[i]).marginBottom)
     // No "the first item always fits" exemption, unlike splitTableRows. When not
     // even one item fits the space left, returning null lets the caller move the
     // whole list to a fresh page and try again with a full page of budget;
@@ -668,9 +841,32 @@ function splitListItems(list: HTMLElement, availH: number): HTMLElement | null {
     // nested list has to travel with the item it belongs to, never alone.
     if (kids[i + 1] === undefined || kids[i + 1].tagName === 'LI') splitAt = i + 1
   }
-  if (splitAt === 0 || splitAt >= kids.length) return null
+  if (splitAt >= kids.length) return null // everything already fits
+
+  // The first item that did not fit can still give up its opening lines. Without
+  // this a 100-line item jumps whole and leaves most of the page blank, which is
+  // the case that motivated line splitting in the first place.
+  let tail: HTMLElement | null = null
+  const firstMoving = kids[splitAt]
+  if (firstMoving) {
+    const itemTop = firstMoving.getBoundingClientRect().top - listTop
+    const budget = availH - itemTop
+    // A list whose only child is another list is what a document that starts at
+    // a deeper level produces (renderBlocks attaches it to `parent.lastLi ??
+    // parent.el`). Recursing is what makes THAT case splittable: the outer list
+    // has no item of its own to cut.
+    if (firstMoving.tagName === 'LI') tail = splitInlineAtHeight(firstMoving, budget)
+    else if (firstMoving.tagName === 'OL' || firstMoving.tagName === 'UL') {
+      tail = splitListItems(firstMoving, budget)
+    }
+  }
+  if (splitAt === 0 && !tail) return null
+
   const rest = buildContinuationList(list, splitAt)
-  for (let i = splitAt; i < kids.length; i++) rest.appendChild(kids[i])
+  if (tail) rest.appendChild(tail)
+  // When the item was line-split its head stays behind, so the continuation
+  // picks up at the item AFTER it.
+  for (let i = tail ? splitAt + 1 : splitAt; i < kids.length; i++) rest.appendChild(kids[i])
   return rest
 }
 
@@ -683,7 +879,11 @@ function buildContinuationList(list: HTMLElement, splitAt: number): HTMLElement 
   const rest = list.cloneNode(false) as HTMLElement
   if (list.tagName === 'OL') {
     // Only <li> children advance an ordered list's counter, so a nested list
-    // left behind must not be counted.
+    // left behind must not be counted. `splitAt` is the index of the first item
+    // that moves, which is also the count of numbers already used — and it holds
+    // for a line-split item too: its tail leads the continuation with the marker
+    // hidden, occupying the number the head already showed, so the next real
+    // item still lands on the following number.
     const consumed = Array.from(list.children).slice(0, splitAt).filter(c => c.tagName === 'LI').length
     // `.start` already reports 1 when the attribute is absent, so no `|| 1`
     // fallback: numbering.ts passes w:start through verbatim, and a list that
@@ -850,6 +1050,11 @@ function renderPlainPaginated(
     pageHasFn = true
   }
 
+  // Reused for every fit measurement: a zero-height, zero-margin marker whose
+  // position reports where the next block would start on the current page.
+  const fitProbe = document.createElement('div')
+  fitProbe.style.cssText = 'height:0;margin:0;padding:0;border:0'
+
   pageDiv = newPage()
   for (let i = 0; i < children.length; i++) {
     const child = children[i]
@@ -863,13 +1068,16 @@ function renderPlainPaginated(
       let piece = child
       for (;;) {
         pageDiv.appendChild(piece)
-        // Real consumed height once the piece is placed, taken from layout:
-        // offsetTop is measured from the page's border box, so subtracting the
-        // top margin gives the space used inside the content box. offsetHeight
-        // alone misses the piece's own margins and the gap to the block above,
-        // and that error compounds — three list pieces on one page overflowed
-        // it by 48px, stretching the page past its min-height.
-        const usedAfter = piece.offsetTop + piece.offsetHeight - pm.top
+        // Space actually consumed on this page, measured with a zero-height
+        // sentinel placed after the piece: it lands exactly where the next block
+        // would start, so margins that collapse OUT of the piece's own box are
+        // counted. `piece.offsetHeight` is the border box and misses them — a
+        // list whose last item carries a bottom margin fit "by the box" and then
+        // overflowed the page by that margin, silently, since the page is sized
+        // with min-height.
+        pageDiv.appendChild(fitProbe)
+        const usedAfter = fitProbe.offsetTop - pm.top
+        pageDiv.removeChild(fitProbe)
         // Reserve space for footnotes referenced by the rows/items about to land
         // on this page: Word puts a footnote at the bottom of the page that
         // holds its reference, so the piece must break early enough to leave

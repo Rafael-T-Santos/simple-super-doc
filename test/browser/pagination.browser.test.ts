@@ -1042,12 +1042,15 @@ describe('page-aware pagination: lists split across pages', () => {
     expect(r.bulletsWithStart).toBe(0)
   }, 30_000)
 
-  it('terminates when a single item is taller than a whole page', async () => {
-    // One item that cannot fit any page: the paginator must accept the overflow
-    // rather than loop forever trying to split it onto a fresh page.
+  it('terminates on an item many pages tall, carrying all of its text', async () => {
+    // One item far taller than a page. It now line-splits across many pages, so
+    // the <li> count is no longer the invariant — the text is. Each split must
+    // move at least MIN_LINES_PER_PIECE lines, or this would never terminate.
     const r = await listPages(await buildLongListDocx(3, 'WORD '.repeat(2000), 2, false, 4000))
-    expect(r.nPages).toBeGreaterThan(0)
-    expect(r.totalItems).toBe(3)
+    expect(r.nPages).toBeGreaterThan(1)
+    expect(r.nPages).toBeLessThan(200) // terminated rather than spun
+    const words = r.perPage.map(p => p.text).join(' ')
+    expect((words.match(/WORD/g) ?? []).length).toBe(2000 * 3)
   }, 30_000)
 })
 
@@ -1163,5 +1166,121 @@ describe('page-background pagination: page boxes hold their content', () => {
     expect(r.nPages).toBeGreaterThan(1)
     expect(Math.max(...r.overflow)).toBeLessThanOrEqual(1)
     expect(r.paragraphs).toBe(40) // and nothing was dropped to make it fit
+  }, 30_000)
+})
+
+// One very long paragraph, optionally with a bold run in the middle so a cut can
+// land inside it. Paragraphs go through splitterFor's P branch, which nothing
+// else in this file exercises.
+async function buildLongParagraphDocx(sentences = 120, styled = false): Promise<string> {
+  const runs: string[] = []
+  for (let i = 0; i < sentences; i++) {
+    const bold = styled && i % 3 === 1
+    runs.push(
+      bold
+        ? `<w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">BOLD${i} words in bold here. </w:t></w:r>`
+        : `<w:r><w:t xml:space="preserve">Sentence ${i} of a paragraph that runs on and on. </w:t></w:r>`,
+    )
+  }
+  const body =
+    `<w:p><w:r><w:t>Short lead paragraph.</w:t></w:r></w:p>` +
+    `<w:p>${runs.join('')}</w:p>` +
+    `<w:sectPr><w:pgSz w:w="12240" w:h="5000"/>` +
+    `<w:pgMar w:top="400" w:bottom="400" w:left="600" w:right="600"/></w:sectPr>`
+
+  const zip = new JSZip()
+  zip.file(
+    '[Content_Types].xml',
+    `<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
+      `<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>` +
+      `<Default Extension="xml" ContentType="application/xml"/>` +
+      `<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>` +
+      `<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>`,
+  )
+  zip.file(
+    '_rels/.rels',
+    `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+      `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`,
+  )
+  zip.file(
+    'word/styles.xml',
+    `<?xml version="1.0"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
+      `<w:docDefaults><w:rPrDefault><w:rPr><w:sz w:val="24"/></w:rPr></w:rPrDefault></w:docDefaults></w:styles>`,
+  )
+  zip.file(
+    'word/_rels/document.xml.rels',
+    `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+      `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`,
+  )
+  zip.file(
+    'word/document.xml',
+    `<?xml version="1.0"?><w:document ` +
+      `xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ` +
+      `xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>${body}</w:body></w:document>`,
+  )
+  const buf = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' })
+  return buf.toString('base64')
+}
+
+async function paragraphPages(b64: string) {
+  const page = await browser.newPage({ viewport: { width: 1000, height: 1400 } })
+  await page.setContent('<!doctype html><meta charset="utf-8"><div id="view"></div>')
+  await page.addScriptTag({ content: bundleJs })
+  const r = await page.evaluate(async (b64: string) => {
+    const bin = atob(b64)
+    const arr = new Uint8Array(bin.length)
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const SD = (window as any).SimpleDoc
+    const doc = await SD.parse(arr.buffer)
+    SD.render(doc, document.getElementById('view'))
+    const pages = Array.from(document.querySelectorAll('.ssd-page')) as HTMLElement[]
+    return {
+      nPages: pages.length,
+      overflowing: pages.filter(p => {
+        const min = parseFloat(getComputedStyle(p).minHeight)
+        return p.getBoundingClientRect().height > min + 1
+      }).length,
+      // Pages carrying a piece of the long paragraph.
+      pagesWithText: pages.filter(p => /Sentence \d+ of a paragraph/.test(p.textContent ?? '')).length,
+      text: pages.map(p => p.textContent ?? '').join(' ').replace(/\s+/g, ' '),
+      // Every run that was bold in the document must still be bold after the cut,
+      // on whichever page it landed on.
+      boldTexts: Array.from(document.querySelectorAll('.ssd-page span'))
+        .filter(s => getComputedStyle(s).fontWeight === '700' || getComputedStyle(s).fontWeight === 'bold')
+        .map(s => s.textContent ?? '')
+        .join(' '),
+    }
+  }, b64)
+  await page.close()
+  return r
+}
+
+describe('page-aware pagination: paragraphs split between lines', () => {
+  it('continues a long paragraph on the next page', async () => {
+    const r = await paragraphPages(await buildLongParagraphDocx(120))
+    expect(r.nPages).toBeGreaterThan(1)
+    // The paragraph itself spans pages: without line splitting it would sit
+    // whole on one page and every other page would be empty.
+    expect(r.pagesWithText).toBeGreaterThan(1)
+    expect(r.overflowing).toBe(0)
+  }, 30_000)
+
+  it('keeps every sentence exactly once across the cut', async () => {
+    const r = await paragraphPages(await buildLongParagraphDocx(120))
+    const seen = r.text.match(/Sentence \d+ of/g) ?? []
+    expect(seen.length).toBe(120)
+    expect(new Set(seen).size).toBe(120)
+  }, 30_000)
+
+  it('keeps run formatting when the cut lands inside a styled run', async () => {
+    // extractContents rebuilds the ancestor chain on the far side of the cut.
+    // If that did not hold, bold text after the break would render unstyled.
+    const r = await paragraphPages(await buildLongParagraphDocx(120, true))
+    const boldCount = (r.boldTexts.match(/BOLD\d+/g) ?? []).length
+    const totalBold = (r.text.match(/BOLD\d+/g) ?? []).length
+    expect(totalBold).toBeGreaterThan(10) // guard: the fixture really has bold runs
+    expect(boldCount).toBe(totalBold) // and none of them lost their weight
+    expect(r.overflowing).toBe(0)
   }, 30_000)
 })
