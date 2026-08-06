@@ -153,9 +153,10 @@ following are intentionally out of scope:
   page breaks are reconstructed by two-pass DOM measurement and heuristics.
   Pagination is close but not guaranteed to match Word/LibreOffice line for
   line. For a byte-faithful page image, convert the `.docx` to PDF.
-- **Matching Word's page breaks exactly** — even with the document's own fonts
-  loaded, pagination is reconstructed rather than replicated, and a long document
-  can come out a page shorter or longer than Word or LibreOffice renders it.
+- **Matching Word's page breaks exactly** — pagination is reconstructed rather
+  than replicated. Line spacing other than single (1.5 lines, double) still
+  scales the font size rather than the font's natural line box, which CSS cannot
+  express arithmetically, so those paragraphs are approximate.
 - **Comments** — review comments are parsed away (treated as noise); only
   tracked-change insertions/deletions are surfaced (via `showRevisions`).
 

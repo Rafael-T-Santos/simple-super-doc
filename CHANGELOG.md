@@ -4,6 +4,38 @@ All notable changes to `simple-super-doc` are documented here. The format is bas
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.15.0] - 2026-08-06
+
+Single line spacing is now the font's own line height, which is what Word means
+by it. This moves where pages break in almost any document.
+
+### Fixed
+- **Single spacing was rendering ~25% too tight.** OOXML writes it as
+  `w:line="240" w:lineRule="auto"`, and 240 counts 240ths of a *line* — a line
+  being the font's own box (ascent + descent + gap), not the font size. The
+  parser divided 240 by 240 and emitted the CSS number `1`, pinning every line
+  to exactly the font size. Against a LibreOffice render of the same seven-page
+  contract this renderer produced six pages; per-page text agreement on the
+  worst page was 0.195. It now maps to `line-height: normal` and both contracts
+  land on seven pages, with the worst page at 0.929 and page counts matching the
+  reference on all five documents tested.
+
+  There was a tell: with no `w:spacing` at all the renderer fell back to 1.15,
+  so a document that *declared* single spacing came out tighter than one that
+  said nothing.
+
+### Added
+- `ComputedStyle.lineHeightSingle` marks single spacing explicitly. It has to be
+  explicit rather than merely absent: styles merge with `Object.assign`, where a
+  missing key cannot override an inherited one, so a paragraph asking for single
+  over a document default of 1.15 lines silently kept 1.15.
+
+Non-single multipliers (1.5 lines, double) are unchanged: they still scale the
+font size rather than the natural line. By the spec they should scale the line,
+but doing that measured worse — a document default of 1.15 lines became 1.38 and
+pushed the same contract to nine pages — so it is left alone pending better
+evidence.
+
 ## [0.14.0] - 2026-08-06
 
 ### Added
