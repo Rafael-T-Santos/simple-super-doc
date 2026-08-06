@@ -4,6 +4,35 @@ All notable changes to `simple-super-doc` are documented here. The format is bas
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.14.0] - 2026-08-06
+
+### Added
+- **Embedded fonts are loaded and used.** A `.docx` can carry its own font files
+  (`w:embedRegular`, `w:embedBold`, `w:embedItalic`, `w:embedBoldItalic` in
+  `fontTable.xml`). Until now they were ignored, so a document whose typeface was
+  not installed rendered in whatever the browser fell back to. They are now read,
+  de-obfuscated when Word applied its `.odttf` scrambling, and registered with
+  the browser during `parse()` — before the renderer measures anything, since a
+  font arriving after layout would reflow text under page breaks already decided.
+  `DocxDocument.fonts` exposes them as data URLs so a consumer rendering
+  elsewhere can emit its own `@font-face` rules. A font part that is corrupt or
+  in a format the browser cannot load is skipped rather than failing the parse.
+
+### Correction to 0.13.3
+The 0.13.3 notes claimed the page-count difference against a LibreOffice render
+was caused by these missing fonts, citing "345 lines against the reference's
+445". **That was wrong on both counts.** The line-count figure came from a broken
+measurement: `Range.getClientRects()` returns one rect per *block* when the range
+spans block-level children, so paragraphs inside table cells counted as a single
+line. And loading the real fonts turns out to make text *narrower*, not wider —
+the same string measures 574px in DM Sans against 593px in the fallback — so the
+missing fonts could not have been making our lines hold more text.
+
+Embedded font loading is a real fidelity fix and is worth having on its own, but
+it does not change the page count on the documents this was tested against. Why
+this renderer lays a long contract out in 6 pages where LibreOffice uses 7 is
+still open.
+
 ## [0.13.3] - 2026-08-06
 
 A paragraph or list item too tall for the space left now continues on the next
@@ -29,13 +58,9 @@ page instead of jumping to it whole.
 
 **On page counts:** this changes where breaks fall, so a document may render in
 fewer pages than before. Comparing against a LibreOffice render of the same
-contract, our page count moved from 7 to 6 while the reference stayed at 7. That
-gap is *not* the line breaking: these documents embed their fonts
-(`word/fonts/*.ttf`), the reference renderer uses them and this one does not yet,
-so our lines hold more text — 345 lines against the reference's 445 for the same
-document. Embedded font loading is the next thing to fix, and until it lands,
-page-for-page agreement with Word or LibreOffice is not a meaningful measure of
-this renderer's pagination.
+contract, our page count moved from 7 to 6 while the reference stayed at 7. The
+cause is not yet established — see the correction in 0.14.0, which retracts the
+explanation originally given here.
 
 ## [0.13.2] - 2026-08-06
 

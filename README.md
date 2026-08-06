@@ -61,6 +61,11 @@ non-docx or malformed input.
   list's continuation resumes its numbering rather than restarting at 1. A
   paragraph or list item taller than the space left is cut between its lines,
   keeping run formatting across the break and honoring Word's widow/orphan rule.
+- **Embedded fonts** — a `.docx` that ships its own fonts (`w:embedRegular` and
+  friends in `fontTable.xml`) renders in them instead of a browser fallback.
+  Word's `.odttf` obfuscation is undone, and the fonts are registered before the
+  renderer measures anything, so page breaks are decided against the real
+  typeface. `doc.fonts` exposes them as data URLs for rendering elsewhere.
 - **Images** — inline and anchored DrawingML (`a:blip`) and legacy VML
   (`w:pict`/`v:imagedata`), as base64 data URLs; external/linked images
   (`r:link`) render from their URL. (EMF/WMF metafiles are skipped — browsers
@@ -148,12 +153,9 @@ following are intentionally out of scope:
   page breaks are reconstructed by two-pass DOM measurement and heuristics.
   Pagination is close but not guaranteed to match Word/LibreOffice line for
   line. For a byte-faithful page image, convert the `.docx` to PDF.
-- **Embedded fonts** — a `.docx` can ship its own fonts in `word/fonts/`
-  (`w:embedRegular` and friends in `fontTable.xml`). Those are not loaded yet, so
-  a document whose font is not installed renders in the browser's fallback. That
-  changes line breaking, and with it the page count: on a contract embedding DM
-  Sans this renderer produced 345 lines where a reference render using the
-  embedded font produced 445.
+- **Matching Word's page breaks exactly** — even with the document's own fonts
+  loaded, pagination is reconstructed rather than replicated, and a long document
+  can come out a page shorter or longer than Word or LibreOffice renders it.
 - **Comments** — review comments are parsed away (treated as noise); only
   tracked-change insertions/deletions are surfaced (via `showRevisions`).
 
