@@ -3,6 +3,10 @@ name: Deploy demo to GitHub Pages
 on:
   push:
     branches: [main]
+  # Manual trigger, from the Actions tab or `gh workflow run pages.yml`. Needed
+  # whenever a deploy has to be retried without an empty commit to force it —
+  # a failed run, or a push that landed while the Pages service was down.
+  workflow_dispatch:
 
 permissions:
   contents: read
