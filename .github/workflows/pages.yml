@@ -9,9 +9,15 @@ permissions:
   pages: write
   id-token: write
 
+# Let a deploy that is already under way finish instead of killing it for the
+# next push. Cancelling mid-flight only makes sense when a newer run supersedes
+# an older one cheaply; a Pages deploy waits on an external service, so a slow
+# queue turned every push into an assassination — during the 2026-08-06 Actions
+# outage one deploy sat 35 minutes and was cancelled by the push behind it
+# rather than ever finishing. Queueing is the behaviour we want here.
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   deploy:
