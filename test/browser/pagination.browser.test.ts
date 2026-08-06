@@ -648,3 +648,220 @@ describe('page-aware pagination: repeating heading rows (w:tblHeader)', () => {
     expect(pieces.length).toBeGreaterThan(0)
   }, 30_000)
 })
+
+// A one-row table whose three cells exercise the cell-orientation properties:
+// a plain cell, a bottom-aligned cell, and a rotated cell. The row is given a
+// large w:trHeight so vertical alignment has room to be visible.
+async function buildCellOrientationDocx(textDirection: 'tbRl' | 'btLr'): Promise<string> {
+  const cell = (tcPr: string, text: string) =>
+    `<w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/>${tcPr}</w:tcPr>` +
+    `<w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:tc>`
+
+  const body =
+    `<w:tbl><w:tblPr><w:tblW w:w="9000" w:type="dxa"/>` +
+    `<w:tblBorders><w:top w:val="single" w:sz="4" w:color="000000"/>` +
+    `<w:bottom w:val="single" w:sz="4" w:color="000000"/>` +
+    `<w:insideV w:val="single" w:sz="4" w:color="000000"/></w:tblBorders></w:tblPr>` +
+    `<w:tblGrid><w:gridCol w:w="2250"/><w:gridCol w:w="2250"/>` +
+    `<w:gridCol w:w="2250"/><w:gridCol w:w="2250"/></w:tblGrid>` +
+    `<w:tr><w:trPr><w:trHeight w:val="2000"/></w:trPr>` +
+    cell(``, 'plain') +
+    cell(`<w:vAlign w:val="bottom"/>`, 'bottom') +
+    cell(`<w:vAlign w:val="center"/>`, 'middle') +
+    cell(`<w:textDirection w:val="${textDirection}"/><w:vAlign w:val="center"/>`, 'rotated') +
+    `</w:tr></w:tbl>` +
+    `<w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr>`
+
+  const zip = new JSZip()
+  zip.file(
+    '[Content_Types].xml',
+    `<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
+      `<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>` +
+      `<Default Extension="xml" ContentType="application/xml"/>` +
+      `<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>` +
+      `<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>`,
+  )
+  zip.file(
+    '_rels/.rels',
+    `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+      `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`,
+  )
+  zip.file(
+    'word/styles.xml',
+    `<?xml version="1.0"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
+      `<w:docDefaults><w:rPrDefault><w:rPr><w:sz w:val="24"/></w:rPr></w:rPrDefault></w:docDefaults></w:styles>`,
+  )
+  zip.file(
+    'word/_rels/document.xml.rels',
+    `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+      `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`,
+  )
+  zip.file(
+    'word/document.xml',
+    `<?xml version="1.0"?><w:document ` +
+      `xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ` +
+      `xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>${body}</w:body></w:document>`,
+  )
+  const buf = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' })
+  return buf.toString('base64')
+}
+
+async function cellOrientation(b64: string) {
+  const page = await browser.newPage({ viewport: { width: 1000, height: 1400 } })
+  await page.setContent('<!doctype html><meta charset="utf-8"><div id="view"></div>')
+  await page.addScriptTag({ content: bundleJs })
+  const result = await page.evaluate(async (b64: string) => {
+    const bin = atob(b64)
+    const arr = new Uint8Array(bin.length)
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const SD = (window as any).SimpleDoc
+    const doc = await SD.parse(arr.buffer)
+    SD.render(doc, document.getElementById('view'))
+    const cells = Array.from(document.querySelectorAll('td')) as HTMLElement[]
+    const read = (td: HTMLElement) => {
+      const cs = getComputedStyle(td)
+      // Where the text actually sits inside the cell, as a fraction of the cell
+      // height: computed vertical-align only proves the property was set, this
+      // proves the layout engine moved the content.
+      const cellBox = td.getBoundingClientRect()
+      const inner = (td.querySelector('p, div') as HTMLElement | null) ?? td
+      const innerBox = inner.getBoundingClientRect()
+      return {
+        verticalAlign: cs.verticalAlign,
+        writingMode: cs.writingMode,
+        text: (td.textContent ?? '').trim(),
+        cellHeight: Math.round(cellBox.height),
+        contentCenterFraction:
+          cellBox.height > 0
+            ? (innerBox.top + innerBox.height / 2 - cellBox.top) / cellBox.height
+            : -1,
+        innerTransform: (td.firstElementChild as HTMLElement | null)
+          ? getComputedStyle(td.firstElementChild as HTMLElement).transform
+          : 'none',
+      }
+    }
+    return cells.map(read)
+  }, b64)
+  await page.close()
+  return result
+}
+
+describe('table cell orientation (w:vAlign, w:textDirection)', () => {
+  it('puts each w:vAlign on its own third of the cell', async () => {
+    const [plain, bottom, middle] = await cellOrientation(await buildCellOrientationDocx('tbRl'))
+    // 'center' is the OOXML name; CSS spells the same thing 'middle'.
+    expect(plain.verticalAlign).toBe('top')
+    expect(bottom.verticalAlign).toBe('bottom')
+    expect(middle.verticalAlign).toBe('middle')
+    // The row is ~133px tall for one line of text, so the three cells' content
+    // must actually sit in different bands of the cell, not just carry the CSS.
+    expect(plain.contentCenterFraction).toBeLessThan(0.4)
+    expect(middle.contentCenterFraction).toBeGreaterThan(0.4)
+    expect(middle.contentCenterFraction).toBeLessThan(0.6)
+    expect(bottom.contentCenterFraction).toBeGreaterThan(0.6)
+  }, 30_000)
+
+  it('rotates a w:textDirection="tbRl" cell with writing-mode on the cell itself', async () => {
+    const [, , , rotated] = await cellOrientation(await buildCellOrientationDocx('tbRl'))
+    expect(rotated.writingMode).toBe('vertical-rl')
+    expect(rotated.text).toBe('rotated')
+    // tbRl reads top-to-bottom, so no counter-rotation wrapper is added.
+    expect(rotated.innerTransform).toBe('none')
+  }, 30_000)
+
+  it('turns a w:textDirection="btLr" cell 180° on an inner element', async () => {
+    const [, , , rotated] = await cellOrientation(await buildCellOrientationDocx('btLr'))
+    expect(rotated.writingMode).toBe('vertical-rl')
+    expect(rotated.text).toBe('rotated')
+    // matrix(-1, 0, 0, -1, 0, 0) is rotate(180deg). It must be on a child, not
+    // on the cell: rotating the cell would flip its background and borders too.
+    expect(rotated.innerTransform).toBe('matrix(-1, 0, 0, -1, 0, 0)')
+  }, 30_000)
+})
+
+// A rotated cell with NO explicit row height, in a fixed-layout table (w:tblGrid
+// present). This is the clipping risk: if the table sizing algorithm does not
+// measure the rotated text, the row stays one line tall and the label spills out
+// of the cell instead of the row growing to hold it.
+async function buildTallRotatedCellDocx(): Promise<string> {
+  const long = 'Rotated label that is far longer than one line of a cell'
+  const body =
+    `<w:tbl><w:tblPr><w:tblW w:w="9000" w:type="dxa"/>` +
+    `<w:tblBorders><w:top w:val="single" w:sz="4" w:color="000000"/>` +
+    `<w:bottom w:val="single" w:sz="4" w:color="000000"/>` +
+    `<w:insideV w:val="single" w:sz="4" w:color="000000"/></w:tblBorders></w:tblPr>` +
+    `<w:tblGrid><w:gridCol w:w="1000"/><w:gridCol w:w="8000"/></w:tblGrid>` +
+    `<w:tr>` +
+    `<w:tc><w:tcPr><w:textDirection w:val="btLr"/></w:tcPr>` +
+    `<w:p><w:r><w:t>${long}</w:t></w:r></w:p></w:tc>` +
+    `<w:tc><w:tcPr/><w:p><w:r><w:t>short</w:t></w:r></w:p></w:tc>` +
+    `</w:tr></w:tbl>` +
+    `<w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr>`
+
+  const zip = new JSZip()
+  zip.file(
+    '[Content_Types].xml',
+    `<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
+      `<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>` +
+      `<Default Extension="xml" ContentType="application/xml"/>` +
+      `<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>` +
+      `<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>`,
+  )
+  zip.file(
+    '_rels/.rels',
+    `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+      `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`,
+  )
+  zip.file(
+    'word/styles.xml',
+    `<?xml version="1.0"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
+      `<w:docDefaults><w:rPrDefault><w:rPr><w:sz w:val="24"/></w:rPr></w:rPrDefault></w:docDefaults></w:styles>`,
+  )
+  zip.file(
+    'word/_rels/document.xml.rels',
+    `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+      `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`,
+  )
+  zip.file(
+    'word/document.xml',
+    `<?xml version="1.0"?><w:document ` +
+      `xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ` +
+      `xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>${body}</w:body></w:document>`,
+  )
+  const buf = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' })
+  return buf.toString('base64')
+}
+
+describe('rotated cell sizing', () => {
+  it('grows the row to fit the rotated text instead of clipping it', async () => {
+    const page = await browser.newPage({ viewport: { width: 1000, height: 1400 } })
+    await page.setContent('<!doctype html><meta charset="utf-8"><div id="view"></div>')
+    await page.addScriptTag({ content: bundleJs })
+    const r = await page.evaluate(async (b64: string) => {
+      const bin = atob(b64)
+      const arr = new Uint8Array(bin.length)
+      for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const SD = (window as any).SimpleDoc
+      const doc = await SD.parse(arr.buffer)
+      SD.render(doc, document.getElementById('view'))
+      const td = document.querySelectorAll('td')[0] as HTMLElement
+      const cellBox = td.getBoundingClientRect()
+      const range = document.createRange()
+      range.selectNodeContents(td)
+      const textBox = range.getBoundingClientRect()
+      return {
+        cellHeight: Math.round(cellBox.height),
+        textHeight: Math.round(textBox.height),
+        // Positive means the text paints below the cell's bottom edge.
+        overflowPx: Math.round(textBox.bottom - cellBox.bottom),
+      }
+    }, await buildTallRotatedCellDocx())
+    await page.close()
+    // The label is ~380px of rotated text; the row must be at least that tall.
+    expect(r.textHeight).toBeGreaterThan(200)
+    expect(r.cellHeight).toBeGreaterThanOrEqual(r.textHeight)
+    expect(r.overflowPx).toBeLessThanOrEqual(2)
+  }, 30_000)
+})

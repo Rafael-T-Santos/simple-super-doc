@@ -848,8 +848,17 @@ async function parseTable(
       const cellBlocks = await parseBlockContainer(tc, ctx, cellOrder, cellParaXmls, cellTableXmls)
       const irCell: TableCell = { rowSpan: cell.rowSpan, colSpan: cell.colSpan, blocks: cellBlocks }
       if (cell.backgroundColor) irCell.backgroundColor = cell.backgroundColor
-      const border = resolveCellBorder((tc.tcPr as Record<string, unknown> | undefined), uniformBorder)
+      const cellPr = tc.tcPr as Record<string, unknown> | undefined
+      const border = resolveCellBorder(cellPr, uniformBorder)
       if (border) irCell.border = border
+      // w:vAlign — where the content sits when the row is taller than the text
+      // (form tables and merged header cells rely on it). Only a direct w:tcPr
+      // is read; a table style that sets vAlign is not carried through.
+      const vAlign = cellVerticalAlign(cellPr)
+      if (vAlign) irCell.verticalAlign = vAlign
+      // w:textDirection — a rotated cell, the usual narrow vertical label column.
+      const textDir = cellTextDirection(cellPr)
+      if (textDir) irCell.textDirection = textDir
       irCells.push(irCell)
     }
     const irRow: TableRow = { cells: irCells }
@@ -903,6 +912,26 @@ async function parseTable(
     ...(cellPadding ? { cellPadding } : {}),
     ...(align ? { align } : {}),
   }
+}
+
+// w:vAlign (ST_VerticalJc): top | center | both | bottom. "both" is a vertical
+// justification CSS has no equivalent for; Word draws a single line of it
+// centered, so it maps to center. Anything else (including an explicit "top")
+// returns undefined and leaves the renderer on its top default.
+function cellVerticalAlign(tcPr: Record<string, unknown> | undefined): 'center' | 'bottom' | undefined {
+  const v = getVal(tcPr?.vAlign as unknown)
+  if (v === 'center' || v === 'both') return 'center'
+  if (v === 'bottom') return 'bottom'
+  return undefined
+}
+
+// w:textDirection (ST_TextDirection). Only the two rotations Word's cell UI
+// produces are mapped: tbRl (rotate 90° clockwise, reads top-to-bottom) and
+// btLr (rotate 270°, reads bottom-to-top). The horizontal lrTb default and the
+// *V vertical-CJK variants stay undefined so the cell renders horizontally.
+function cellTextDirection(tcPr: Record<string, unknown> | undefined): 'tbRl' | 'btLr' | undefined {
+  const v = getVal(tcPr?.textDirection as unknown)
+  return v === 'tbRl' || v === 'btLr' ? v : undefined
 }
 
 // Per-cell border: each side uses the cell's own w:tcBorders when present

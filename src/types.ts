@@ -114,6 +114,8 @@ export type TableCell = {
   blocks: Block[]
   backgroundColor?: string  // hex from w:shd fill (e.g. "ff6109"), no # prefix
   border?: CellBorders      // effective cell borders (table style ∪ tblBorders ∪ tcBorders)
+  verticalAlign?: 'top' | 'center' | 'bottom'  // w:vAlign; absent means Word's default (top)
+  textDirection?: 'tbRl' | 'btLr'  // w:textDirection; absent means horizontal (lrTb)
 }
 
 // Per-side CSS border shorthands (e.g. "1px solid #000"). A side is absent when

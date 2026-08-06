@@ -506,15 +506,33 @@ function renderTable(block: TableBlock, container: HTMLElement): void {
       }
       // Cell padding from the document's w:tcMar (keeps rows as compact as Word).
       if (pad) td.style.padding = `${pad.top}px ${pad.right}px ${pad.bottom}px ${pad.left}px`
-      td.style.verticalAlign = 'top'
+      // w:vAlign; Word's default is top, which is also what an unset cell gets.
+      td.style.verticalAlign =
+        cell.verticalAlign === 'center' ? 'middle' : cell.verticalAlign === 'bottom' ? 'bottom' : 'top'
       // Let long template tokens wrap instead of forcing overflow.
       td.style.overflowWrap = 'break-word'
       td.style.wordBreak = 'break-word'
+      // w:textDirection: writing-mode goes on the CELL, not on a wrapper, so the
+      // table sizing algorithm measures the rotated text and the row grows to fit
+      // it (a wrapper would be sized by a row height that does not know about it).
+      // btLr reads bottom-to-top, which is vertical-rl turned 180°; that rotation
+      // has to live on an inner element, because rotating the cell itself would
+      // also flip its background and swap its top/bottom borders.
+      let target: HTMLElement = td
+      if (cell.textDirection) {
+        td.style.writingMode = 'vertical-rl'
+        if (cell.textDirection === 'btLr') {
+          const rot = document.createElement('div')
+          rot.style.transform = 'rotate(180deg)'
+          td.appendChild(rot)
+          target = rot
+        }
+      }
       // Cell padding already provides the spacing, so don't add the paragraph's
       // before/after margins inside cells (Word keeps cell content tight).
       const prev = inTableCell
       inTableCell = true
-      renderBlocks(cell.blocks, td)
+      renderBlocks(cell.blocks, target)
       inTableCell = prev
       tr.appendChild(td)
     }
