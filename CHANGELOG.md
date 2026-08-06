@@ -4,6 +4,28 @@ All notable changes to `simple-super-doc` are documented here. The format is bas
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.13.1] - 2026-08-06
+
+A long list no longer jumps whole to the next page, leaving most of a page blank.
+
+### Fixed
+- **Lists split across pages.** The paginator could only cut a table between its
+  rows; every other block moved whole to the next page. A list taller than the
+  space left therefore jumped in one piece, and on a real contract that left 60%
+  of a page empty while the reference render filled it. Lists now continue on the
+  next page like tables do, and an ordered list's continuation resumes its
+  numbering instead of restarting at 1. Measured against a LibreOffice render of
+  the same contract, per-page text agreement went from 0.53 to 0.89 on the worst
+  page, and four pages that wasted 33-60% of their height now waste 8-12%.
+- **Pages no longer stretch past their own height.** The paginator counted a
+  split block's consumed space with `offsetHeight`, which omits margins, while
+  measuring every other block from its laid-out position. The two disagreed by up
+  to 48px on a page, quietly pushing content past the page box.
+
+Known limit: a single list item taller than the space left still moves whole,
+because splitting *inside* an item means line-level breaking, which the renderer
+does not do for any block.
+
 ## [0.13.0] - 2026-08-06
 
 Table cells now honor the two properties that decide where their text sits and

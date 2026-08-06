@@ -57,7 +57,8 @@ non-docx or malformed input.
   in headers, footers and notes). Ordering is recovered *within* a run too, so a
   break, tab or inline image packed alongside text lands where Word put it —
   including a table that splits across pages, whose continued piece keeps the
-  document's column widths.
+  document's column widths. Long lists split across pages too, and an ordered
+  list's continuation resumes its numbering rather than restarting at 1.
 - **Images** — inline and anchored DrawingML (`a:blip`) and legacy VML
   (`w:pict`/`v:imagedata`), as base64 data URLs; external/linked images
   (`r:link`) render from their URL. (EMF/WMF metafiles are skipped — browsers
