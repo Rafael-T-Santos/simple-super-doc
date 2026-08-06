@@ -1098,15 +1098,30 @@ function renderPageBgPaginated(doc: DocxDocument, container: HTMLElement): void 
     `width:${contentW}px;padding:0;margin:0;min-height:0;box-shadow:none;background:none`
   container.appendChild(measureDiv)
 
+  // Measure every block in ONE pass, all of them left in the DOM together, and
+  // take each block's footprint as the distance to the next measured block's
+  // top. Measuring a block alone and reading offsetHeight drops its margins:
+  // they collapse straight through a bare wrapper div, so the sum came out
+  // short and the page overflowed its own box (12px on a real template, and
+  // silently, because the box is sized with min-height). Top-to-top spacing is
+  // what the layout engine actually produced, collapsing included, counted
+  // once. Same rule renderPlainPaginated uses for its stage.
   const blockHeight: number[] = new Array(doc.blocks.length).fill(0)
+  // Only blocks with renderable flow get an element, so keep the pairs rather
+  // than a sparse array indexed by block: the footprint of a measured block runs
+  // to the next MEASURED one, skipping whatever produced nothing.
+  const measured: Array<{ block: number; el: HTMLElement }> = []
   for (let i = 0; i < doc.blocks.length; i++) {
     const toMeasure = toFlow(doc.blocks[i])
     if (!toMeasure) continue
     const el = document.createElement('div')
     renderBlocks([toMeasure], el)
     measureDiv.appendChild(el)
-    blockHeight[i] = el.offsetHeight
-    measureDiv.removeChild(el)
+    measured.push({ block: i, el })
+  }
+  for (let k = 0; k < measured.length; k++) {
+    const nextTop = k + 1 < measured.length ? measured[k + 1].el.offsetTop : measureDiv.scrollHeight
+    blockHeight[measured[k].block] = nextTop - measured[k].el.offsetTop
   }
 
   container.removeChild(measureDiv)

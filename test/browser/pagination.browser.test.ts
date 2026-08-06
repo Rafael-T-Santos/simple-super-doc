@@ -1050,3 +1050,118 @@ describe('page-aware pagination: lists split across pages', () => {
     expect(r.totalItems).toBe(3)
   }, 30_000)
 })
+
+// A template-shaped .docx: a full-page behindDoc background image plus enough
+// text to fill several pages. This is the only shape that reaches
+// renderPageBgPaginated, the second paginator, which assigns whole blocks to
+// pages from pre-measured heights instead of moving DOM nodes.
+async function buildPageBackgroundDocx(paras = 40): Promise<string> {
+  // 1x1 transparent PNG — the smallest thing that parses as an image.
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+    'base64',
+  )
+  // A behindDoc anchor sized to the whole page marks the background.
+  const bgAnchor =
+    `<w:p><w:r><w:drawing>` +
+    `<wp:anchor behindDoc="1" distT="0" distB="0" distL="0" distR="0" simplePos="0" ` +
+    `relativeHeight="0" locked="0" layoutInCell="1" allowOverlap="1">` +
+    `<wp:simplePos x="0" y="0"/>` +
+    `<wp:positionH relativeFrom="page"><wp:posOffset>0</wp:posOffset></wp:positionH>` +
+    `<wp:positionV relativeFrom="page"><wp:posOffset>0</wp:posOffset></wp:positionV>` +
+    `<wp:extent cx="7772400" cy="10058400"/>` +
+    `<wp:docPr id="1" name="bg"/>` +
+    `<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">` +
+    `<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">` +
+    `<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">` +
+    `<pic:blipFill><a:blip r:embed="rId3"/></pic:blipFill>` +
+    `</pic:pic></a:graphicData></a:graphic></wp:anchor>` +
+    `</w:drawing></w:r></w:p>`
+
+  // Spaced paragraphs: the margins between them are exactly what a per-block
+  // offsetHeight measurement drops.
+  const text = Array.from({ length: paras }, (_, i) =>
+    `<w:p><w:pPr><w:spacing w:before="120" w:after="120"/></w:pPr>` +
+    `<w:r><w:t>Paragraph ${i + 1} carrying enough words to take a full line of the page box.</w:t></w:r></w:p>`,
+  ).join('')
+
+  const body =
+    bgAnchor + text +
+    `<w:sectPr><w:pgSz w:w="12240" w:h="6000"/>` +
+    `<w:pgMar w:top="500" w:bottom="500" w:left="600" w:right="600"/></w:sectPr>`
+
+  const zip = new JSZip()
+  zip.file(
+    '[Content_Types].xml',
+    `<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
+      `<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>` +
+      `<Default Extension="xml" ContentType="application/xml"/>` +
+      `<Default Extension="png" ContentType="image/png"/>` +
+      `<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>` +
+      `<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>`,
+  )
+  zip.file(
+    '_rels/.rels',
+    `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+      `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`,
+  )
+  zip.file(
+    'word/styles.xml',
+    `<?xml version="1.0"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
+      `<w:docDefaults><w:rPrDefault><w:rPr><w:sz w:val="24"/></w:rPr></w:rPrDefault></w:docDefaults></w:styles>`,
+  )
+  zip.file(
+    'word/_rels/document.xml.rels',
+    `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+      `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>` +
+      `<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/bg.png"/></Relationships>`,
+  )
+  zip.file('word/media/bg.png', png)
+  zip.file(
+    'word/document.xml',
+    `<?xml version="1.0"?><w:document ` +
+      `xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ` +
+      `xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" ` +
+      `xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"><w:body>${body}</w:body></w:document>`,
+  )
+  const buf = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' })
+  return buf.toString('base64')
+}
+
+describe('page-background pagination: page boxes hold their content', () => {
+  it('never lets a page grow past its own height', async () => {
+    // The page box is sized with min-height, so content that does not fit
+    // stretches the sheet instead of visibly breaking. Measuring each block on
+    // its own dropped the margins between them and overfilled the page by 12px
+    // on a real template, with nothing on screen to show for it.
+    const b64 = await buildPageBackgroundDocx(40)
+    const page = await browser.newPage({ viewport: { width: 1400, height: 1000 } })
+    await page.setContent('<!doctype html><meta charset="utf-8"><div id="view"></div>')
+    await page.addScriptTag({ content: bundleJs })
+    const r = await page.evaluate(async (b64: string) => {
+      const bin = atob(b64)
+      const arr = new Uint8Array(bin.length)
+      for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const SD = (window as any).SimpleDoc
+      const doc = await SD.parse(arr.buffer)
+      SD.render(doc, document.getElementById('view'))
+      const pages = Array.from(document.querySelectorAll('.ssd-page')) as HTMLElement[]
+      return {
+        nPages: pages.length,
+        // Took the bg path (a background image is drawn) rather than the plain one.
+        withBg: pages.filter(p => p.style.backgroundImage && p.style.backgroundImage !== 'none').length,
+        overflow: pages.map(p =>
+          Math.round(p.getBoundingClientRect().height - parseFloat(getComputedStyle(p).minHeight)),
+        ),
+        paragraphs: (document.body.textContent ?? '').match(/Paragraph \d+ carrying/g)?.length ?? 0,
+      }
+    }, b64)
+    await page.close()
+
+    expect(r.withBg).toBeGreaterThan(0) // guard: this fixture must reach the bg paginator
+    expect(r.nPages).toBeGreaterThan(1)
+    expect(Math.max(...r.overflow)).toBeLessThanOrEqual(1)
+    expect(r.paragraphs).toBe(40) // and nothing was dropped to make it fit
+  }, 30_000)
+})
