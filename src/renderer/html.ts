@@ -348,7 +348,13 @@ function renderHeader(doc: DocxDocument, pageDiv: HTMLElement, pageNum: number, 
 function paragraphCss(style: ComputedStyle, skipIndent = false): string {
   const mt = inTableCell ? 0 : style.spaceBefore ?? 0
   const mb = inTableCell ? 0 : style.spaceAfter ?? 0
-  const lh = style.lineHeightPx != null ? `${style.lineHeightPx}px` : `${style.lineHeight ?? LINE_HEIGHT}`
+  // Single spacing is the font's own line box — `normal`, not a number — and is
+  // checked before the multiplier so an explicit single wins over an inherited
+  // one. A document that says nothing falls back to LINE_HEIGHT as before.
+  const lh =
+    style.lineHeightPx != null ? `${style.lineHeightPx}px`
+    : style.lineHeightSingle ? 'normal'
+    : `${style.lineHeight ?? LINE_HEIGHT}`
   let css = `margin:${mt}px 0 ${mb}px;line-height:${lh}`
   if (!skipIndent) {
     if (style.indentLeft) css += `;padding-left:${style.indentLeft}px`

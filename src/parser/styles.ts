@@ -254,7 +254,29 @@ export function extractPPr(pPr: Record<string, unknown> | undefined): Partial<Co
         if (sp.lineRule === 'atLeast' || sp.lineRule === 'exact') {
           s.lineHeightPx = twipsToPx(sp.line) // line is in twips for these rules
         } else {
-          s.lineHeight = parseFloat(sp.line) / 240 // "auto": line is in 240ths of a line
+          // "auto": w:line counts 240ths of a LINE, and a line is the font's
+          // own box (ascent + descent + gap) — NOT the font size. Single
+          // spacing (240) is CSS `line-height: normal`; mapping it to the
+          // number 1 set every line to exactly the font size, ~25% tighter
+          // than Word, and cost a whole page on a seven-page contract.
+          //
+          // Both branches always write, because these merge through
+          // Object.assign and an ABSENT key does not override an inherited
+          // one: a paragraph asking for single over a docDefaults of 1.15
+          // lines would silently keep 1.15. Each side has to cancel the other.
+          const lines = parseFloat(sp.line) / 240
+          if (Math.abs(lines - 1) < 0.01) {
+            s.lineHeightSingle = true
+            delete s.lineHeight
+          } else {
+            // Non-single keeps the raw multiplier against the font size. By the
+            // spec it should scale the natural line too, but scaling it measured
+            // WORSE: this document's docDefaults ask for 1.15 lines, and
+            // 1.15 x natural pushed a 7-page contract to 9 against a reference
+            // that stays at 7. Left as it was until there is evidence for better.
+            s.lineHeight = lines
+            s.lineHeightSingle = false
+          }
         }
       }
     }

@@ -513,6 +513,10 @@ async function parseParagraph(
   const namedStyle = resolveNamedStyle(pStyleId, ctx.styleMap, ctx.docDefaults)
   const pPrStyle = extractPPr(pPr)
   const paraStyle = Object.assign({}, namedStyle, pPrStyle)
+  // Object.assign cannot remove a key, so an inherited multiplier survives a
+  // paragraph that asks for single spacing. The renderer already prefers
+  // lineHeightSingle, but the IR must not REPORT a line height nothing uses.
+  if (paraStyle.lineHeightSingle) delete paraStyle.lineHeight
 
   const list = resolveListRef(pPr, ctx)
 

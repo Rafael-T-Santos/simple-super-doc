@@ -1284,3 +1284,83 @@ describe('page-aware pagination: paragraphs split between lines', () => {
     expect(r.overflowing).toBe(0)
   }, 30_000)
 })
+
+// Two paragraphs: one asking for single spacing over a docDefaults of 1.15
+// lines, one asking for 1.5. Proves what actually reaches the page, which is
+// where this went wrong — the IR looked right while the render did not.
+async function buildLineSpacingDocx(): Promise<string> {
+  const zip = new JSZip()
+  zip.file(
+    '[Content_Types].xml',
+    `<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
+      `<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>` +
+      `<Default Extension="xml" ContentType="application/xml"/>` +
+      `<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>` +
+      `<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>`,
+  )
+  zip.file(
+    '_rels/.rels',
+    `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+      `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`,
+  )
+  zip.file(
+    'word/styles.xml',
+    `<?xml version="1.0"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
+      `<w:docDefaults><w:rPrDefault><w:rPr><w:sz w:val="24"/></w:rPr></w:rPrDefault>` +
+      `<w:pPrDefault><w:pPr><w:spacing w:line="276" w:lineRule="auto"/></w:pPr></w:pPrDefault>` +
+      `</w:docDefaults></w:styles>`,
+  )
+  zip.file(
+    'word/_rels/document.xml.rels',
+    `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+      `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`,
+  )
+  zip.file(
+    'word/document.xml',
+    `<?xml version="1.0"?><w:document ` +
+      `xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ` +
+      `xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>` +
+      `<w:p><w:pPr><w:spacing w:line="240" w:lineRule="auto"/></w:pPr>` +
+      `<w:r><w:t>SINGLE spaced paragraph with enough words to make a line</w:t></w:r></w:p>` +
+      `<w:p><w:pPr><w:spacing w:line="360" w:lineRule="auto"/></w:pPr>` +
+      `<w:r><w:t>ONEANDAHALF spaced paragraph with enough words to make a line</w:t></w:r></w:p>` +
+      `<w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr>` +
+      `</w:body></w:document>`,
+  )
+  const buf = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' })
+  return buf.toString('base64')
+}
+
+describe('line spacing reaches the page', () => {
+  it('renders single spacing as line-height:normal, beating the inherited 1.15', async () => {
+    const page = await browser.newPage({ viewport: { width: 1000, height: 900 } })
+    await page.setContent('<!doctype html><meta charset="utf-8"><div id="view"></div>')
+    await page.addScriptTag({ content: bundleJs })
+    const r = await page.evaluate(async (b64: string) => {
+      const bin = atob(b64)
+      const arr = new Uint8Array(bin.length)
+      for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const SD = (window as any).SimpleDoc
+      const doc = await SD.parse(arr.buffer)
+      SD.render(doc, document.getElementById('view'))
+      const read = (needle: string) => {
+        const el = Array.from(document.querySelectorAll('.ssd-page p'))
+          .find(e => (e.textContent ?? '').includes(needle)) as HTMLElement | undefined
+        if (!el) return null
+        const cs = getComputedStyle(el)
+        return { lineHeight: cs.lineHeight, fontSize: cs.fontSize, ratio: parseFloat(cs.lineHeight) / parseFloat(cs.fontSize) }
+      }
+      return { single: read('SINGLE'), oneAndAhalf: read('ONEANDAHALF') }
+    }, await buildLineSpacingDocx())
+    await page.close()
+
+    expect(r.single).not.toBeNull()
+    // The number 1 (or the inherited 1.15) would both be a px value here.
+    expect(r.single!.lineHeight).toBe('normal')
+    // `normal` is the font's own box, which is looser than the font size.
+    expect(r.single!.ratio).toBeNaN()
+    // A stated multiplier still comes through as a number.
+    expect(r.oneAndAhalf!.ratio).toBeCloseTo(1.5, 1)
+  }, 30_000)
+})

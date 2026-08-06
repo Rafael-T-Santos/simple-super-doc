@@ -168,6 +168,10 @@ export type ComputedStyle = {
   spaceAfter?: number    // px, from w:spacing w:after (twips)
   lineHeight?: number    // unitless multiplier, from w:spacing w:line (auto rule)
   lineHeightPx?: number  // fixed px, from w:spacing w:line (atLeast/exact rule)
+  // OOXML single spacing (w:line=240, auto rule): one line of the FONT, which
+  // is CSS `line-height: normal`, not the number 1. Explicit rather than merely
+  // absent so it can override an inherited multiplier through the style cascade.
+  lineHeightSingle?: boolean
   // Paragraph indentation (from w:ind), in px.
   indentLeft?: number
   indentRight?: number
