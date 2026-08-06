@@ -50,7 +50,8 @@ non-docx or malformed input.
 - **Structure** — numbered and bulleted lists (nested), tables with
   `gridSpan`/`vMerge`, column widths, cell margins and cell borders (resolved by
   cascade: table style → `tblBorders` → `tcBorders`, so borders that come only
-  from a table style like `TableGrid` are drawn), and block/run ordering
+  from a table style like `TableGrid` are drawn), cell orientation (`w:vAlign`
+  vertical alignment and `w:textDirection` rotated cells), and block/run ordering
   recovered from the raw XML (paragraphs, tables, mid-paragraph hyperlinks and
   tracked changes keep their real sequence — in the body, **inside cells**, and
   in headers, footers and notes). Ordering is recovered *within* a run too, so a

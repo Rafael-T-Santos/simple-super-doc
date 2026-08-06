@@ -4,6 +4,28 @@ All notable changes to `simple-super-doc` are documented here. The format is bas
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.13.0] - 2026-08-06
+
+Table cells now honor the two properties that decide where their text sits and
+which way it runs.
+
+### Added
+- **Cell vertical alignment (`w:vAlign`).** A cell set to center or bottom in Word
+  no longer renders its text pinned to the top of the row. `TableCell.verticalAlign`
+  exposes it on the IR. OOXML's `both` (vertical justification, which CSS has no
+  equivalent for) maps to center, matching how Word draws a single line of it. Top
+  is Word's default and stays implicit.
+- **Rotated cells (`w:textDirection`).** The narrow vertical label column Word
+  produces with "Text Direction" now renders rotated instead of horizontal, in both
+  directions: `tbRl` (reads top-to-bottom) and `btLr` (reads bottom-to-top).
+  `TableCell.textDirection` exposes it on the IR. The rotation is applied so the
+  table sizing algorithm measures the rotated text, which means the row grows to
+  hold a long label instead of clipping it. The horizontal `lrTb` default and the
+  vertical-CJK `*V` variants are left horizontal on purpose.
+
+Known limit: only a cell's own `w:tcPr` is read. A table *style* that sets
+`vAlign` is not carried through, since the style cascade for cells is border-only.
+
 ## [0.12.0] - 2026-08-05
 
 Heading rows now repeat when a table breaks across pages, and three more places
