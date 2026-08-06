@@ -1,12 +1,13 @@
 import JSZip from 'jszip'
-import { DocxParseError, type DocxDocument, type NoteEntry, type RenderOptions, type Section, type Block, type ParagraphBlock, type PageSize } from './types.js'
+import { DocxParseError, type DocxDocument, type NoteEntry, type RenderOptions, type Section, type Block, type ParagraphBlock, type PageSize, EmbeddedFont } from './types.js'
 import { parseRelationships } from './parser/relationships.js'
+import { parseEmbeddedFonts, registerFonts } from './parser/fonts.js'
 import { parseStyles } from './parser/styles.js'
 import { parseNumbering, emptyNumbering } from './parser/numbering.js'
 import { parseDocument, parseNotesXml, parseFooterXml, parseHeaderXml, type ParseContext } from './parser/document.js'
 import { render as renderHtml } from './renderer/html.js'
 
-export type { DocxDocument, Block, ParagraphBlock, TableBlock, TableCell, TableRow, TextRun, ImageRun, Run, ComputedStyle, ListRef, NoteEntry, RenderOptions, TabStop, Section, PageSize } from './types.js'
+export type { DocxDocument, Block, ParagraphBlock, TableBlock, TableCell, TableRow, TextRun, ImageRun, Run, ComputedStyle, ListRef, NoteEntry, RenderOptions, TabStop, Section, PageSize, EmbeddedFont } from './types.js'
 export { DocxParseError } from './types.js'
 
 function parsePageSize(xml: string): DocxDocument['pageSize'] {
@@ -75,6 +76,17 @@ export async function parse(buffer: ArrayBuffer): Promise<DocxDocument> {
     readEntry(zip, 'word/settings.xml', false),
   ])
 
+  // Embedded fonts first: the renderer measures text to place page breaks, so a
+  // font that arrives after layout would reflow every page it already decided.
+  const [fontTableXml, fontRelsXml] = await Promise.all([
+    readEntry(zip, 'word/fontTable.xml', false),
+    readEntry(zip, 'word/_rels/fontTable.xml.rels', false),
+  ])
+  const fonts = fontTableXml && fontRelsXml
+    ? await parseEmbeddedFonts(fontTableXml, parseRelationships(fontRelsXml), zip)
+    : []
+  await registerFonts(fonts)
+
   const relationshipMap = relsXml ? parseRelationships(relsXml) : {}
   const { styleMap, docDefaults, tableBorderMap } = parseStyles(stylesXml)
   const { abstractNumMap, numMap } = numberingXml
@@ -126,6 +138,7 @@ export async function parse(buffer: ArrayBuffer): Promise<DocxDocument> {
   return {
     blocks,
     pageSize,
+    ...(fonts.length ? { fonts } : {}),
     ...(footnotes.length ? { footnotes } : {}),
     ...(endnotes.length ? { endnotes } : {}),
     ...(footer && footer.length ? { footer } : {}),

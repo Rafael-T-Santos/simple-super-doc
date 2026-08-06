@@ -1,3 +1,6 @@
+import type { EmbeddedFont } from './parser/fonts.js'
+export type { EmbeddedFont }
+
 export type DocxDocument = {
   blocks: Block[]
   pageSize?: {
@@ -7,6 +10,11 @@ export type DocxDocument = {
     footerPx?: number  // distance of the footer from the page bottom edge (w:footer)
     headerPx?: number  // distance of the header from the page top edge (w:header)
   }
+  // Fonts the package carries inside itself (w:embedRegular and friends in
+  // fontTable.xml), already de-obfuscated and as data URLs. parse() registers
+  // these with the browser; they are exposed so a consumer rendering somewhere
+  // else can emit its own @font-face rules from them.
+  fonts?: EmbeddedFont[]
   footnotes?: NoteEntry[]  // referenced footnotes, in document order (number 1..n)
   endnotes?: NoteEntry[]   // referenced endnotes, in document order (number 1..n)
   footer?: Block[]         // default page footer (w:footerReference); PAGE fields become page numbers
@@ -189,3 +197,4 @@ export class DocxParseError extends Error {
     this.code = code
   }
 }
+
