@@ -1,5 +1,9 @@
 # simple-super-doc
 
+[![npm](https://img.shields.io/npm/v/simple-super-doc?color=cb3837&logo=npm)](https://www.npmjs.com/package/simple-super-doc)
+[![license](https://img.shields.io/npm/l/simple-super-doc?color=blue)](https://github.com/Rafael-T-Santos/simple-super-doc/blob/main/LICENSE)
+[![Buy me a coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-support-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/rafael.t.santos)
+
 Browser-only TypeScript library that parses a `.docx` file into a typed
 intermediate representation (IR) and renders it to HTML. Built for document
 editors and viewers that need a faithful, inspectable model of the document.
@@ -110,8 +114,8 @@ Word/LibreOffice decide the pages purely in their layout engine.
 
 When `render()` detects a full-page background (a `behindDoc=1` anchor), it
 reconstructs the pages with a two-pass approach and a set of heuristics. These
-live in [`src/renderer/layout.ts`](src/renderer/layout.ts) as pure, unit-tested
-functions ([`test/layout-heuristics.test.ts`](test/layout-heuristics.test.ts)):
+live in [`src/renderer/layout.ts`](https://github.com/Rafael-T-Santos/simple-super-doc/blob/main/src/renderer/layout.ts) as pure, unit-tested
+functions ([`test/layout-heuristics.test.ts`](https://github.com/Rafael-T-Santos/simple-super-doc/blob/main/test/layout-heuristics.test.ts)):
 
 - **Two-pass measurement** — each block is measured in a hidden container
   (Pass 1), then content is distributed into page-sized boxes (Pass 2). This
@@ -172,8 +176,17 @@ npm run build:demo   # IIFE bundle into demo/ for the drag-and-drop demo
 
 The two-pass, page-aware pagination (table splitting, per-page footnotes) needs
 a real layout engine, so it's covered by browser tests in
-[`test/browser/`](test/browser/) rather than the node suite. Install the browser
+[`test/browser/`](https://github.com/Rafael-T-Santos/simple-super-doc/blob/main/test/browser/) rather than the node suite. Install the browser
 once with `npx playwright-core install chromium`.
+
+## Support
+
+This is a solo, unfunded project. If it saved you time, a coffee helps keep it
+maintained: **[buymeacoffee.com/rafael.t.santos](https://buymeacoffee.com/rafael.t.santos)**
+
+Free ways to help just as much: open an issue with a `.docx` that renders wrong
+(a real file that breaks it is worth more than a bug report without one), or star
+the repo so other people find it.
 
 ## License
 

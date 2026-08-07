@@ -4,6 +4,20 @@ All notable changes to `simple-super-doc` are documented here. The format is bas
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.15.1] - 2026-08-07
+
+Documentation and package metadata only; no code changed.
+
+### Added
+- A `funding` field pointing at the maintainer's Buy Me a Coffee page, so `npm fund`
+  and the package page can surface it, plus npm/license/funding badges and a short
+  Support section in the README.
+
+### Changed
+- README links to files in this repo are now absolute rather than relative. npm
+  renders the README on its own domain, and whether it rewrites relative paths
+  could not be confirmed; absolute URLs work either way.
+
 ## [0.15.0] - 2026-08-06
 
 Single line spacing is now the font's own line height, which is what Word means

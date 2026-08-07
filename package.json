@@ -43,6 +43,10 @@
     "url": "git+https://github.com/Rafael-T-Santos/simple-super-doc.git"
   },
   "homepage": "https://github.com/Rafael-T-Santos/simple-super-doc#readme",
+  "funding": {
+    "type": "individual",
+    "url": "https://buymeacoffee.com/rafael.t.santos"
+  },
   "bugs": {
     "url": "https://github.com/Rafael-T-Santos/simple-super-doc/issues"
   },
